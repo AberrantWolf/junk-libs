@@ -1,0 +1,12 @@
+[package]
+name = "junk-libs-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+crc32fast.workspace = true
+sha1.workspace = true
+md5.workspace = true

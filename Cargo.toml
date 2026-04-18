@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "junk-libs-core",
+    "junk-libs-disc",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+junk-libs-core = { path = "junk-libs-core" }
+junk-libs-disc = { path = "junk-libs-disc" }
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+crc32fast = "1.4"
+sha1 = "0.10"
+md5 = "0.7"
+chd = "0.3"
+log = { version = "0.4", features = ["std"] }
