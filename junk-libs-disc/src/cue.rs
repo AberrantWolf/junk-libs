@@ -1,8 +1,11 @@
 //! CUE sheet parsing and compatibility detection.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use junk_libs_core::AnalysisError;
+
+use crate::layout::{LEAD_IN_FRAMES, TrackLayout, classify_mode};
+use crate::sector::RAW_SECTOR_SIZE;
 
 /// A parsed CUE sheet.
 #[derive(Debug, Clone)]
@@ -713,6 +716,142 @@ fn flush_pending_tracks_raw(
             output_lines.extend(indexes);
         }
     }
+}
+
+// -- Absolute-sector layout computation --
+
+/// Compute the absolute-sector `TrackLayout` for a parsed CUE sheet.
+///
+/// This is the pure functional core: no file I/O. Track lengths within each
+/// FILE come from consecutive INDEX 01 offsets; the last track in each FILE
+/// needs the BIN file size (in bytes) supplied via the `bin_size` closure.
+///
+/// - Track 1 absolute offset = `LEAD_IN_FRAMES + track_1.index01` (the HTOA
+///   pregap, if any, rides on top of the lead-in — matches the convention
+///   the MusicBrainz / libdiscid DiscID algorithms expect).
+/// - Subsequent tracks accumulate via `prev.absolute_offset + prev.length`.
+/// - `bin_size(filename)` must return the BIN/WAV file's size in bytes; it
+///   must be a multiple of `RAW_SECTOR_SIZE` (2352) — non-aligned sizes
+///   return `AnalysisError::InvalidFormat`.
+pub fn compute_cue_layout(
+    sheet: &CueSheet,
+    bin_size: impl Fn(&str) -> Result<u64, AnalysisError>,
+) -> Result<Vec<TrackLayout>, AnalysisError> {
+    if sheet.files.is_empty() {
+        return Err(AnalysisError::invalid_format("CUE has no FILE entries"));
+    }
+
+    let mut out: Vec<TrackLayout> = Vec::new();
+
+    for file in &sheet.files {
+        if file.tracks.is_empty() {
+            continue;
+        }
+
+        let size_bytes = bin_size(&file.filename)?;
+        if size_bytes % RAW_SECTOR_SIZE != 0 {
+            return Err(AnalysisError::invalid_format(format!(
+                "BIN file '{}' size {} is not a multiple of {}",
+                file.filename, size_bytes, RAW_SECTOR_SIZE
+            )));
+        }
+        let file_sectors = (size_bytes / RAW_SECTOR_SIZE) as u32;
+
+        // INDEX 01 for each track (required); gather within-file sector offsets.
+        let mut within: Vec<u32> = Vec::with_capacity(file.tracks.len());
+        for track in &file.tracks {
+            let idx1 = track
+                .indexes
+                .iter()
+                .find(|i| i.number == 1)
+                .ok_or_else(|| {
+                    AnalysisError::invalid_format(format!(
+                        "track {} missing INDEX 01 in CUE",
+                        track.number
+                    ))
+                })?;
+            within.push(idx1.to_sector_offset() as u32);
+        }
+
+        // Within-file lengths: next track's INDEX 01 for all but the last;
+        // file size - last within-file offset for the final track.
+        let n = file.tracks.len();
+        for (i, track) in file.tracks.iter().enumerate() {
+            let length = if i + 1 < n {
+                within[i + 1].checked_sub(within[i]).ok_or_else(|| {
+                    AnalysisError::invalid_format(
+                        "CUE INDEX 01 offsets are not monotonically increasing",
+                    )
+                })?
+            } else {
+                file_sectors.checked_sub(within[i]).ok_or_else(|| {
+                    AnalysisError::invalid_format(format!(
+                        "BIN '{}' ends before track {}'s INDEX 01",
+                        file.filename, track.number
+                    ))
+                })?
+            };
+
+            let absolute_offset = match out.last() {
+                None => LEAD_IN_FRAMES + within[i],
+                Some(prev) => prev.absolute_offset + prev.length_sectors,
+            };
+
+            out.push(TrackLayout {
+                number: track.number,
+                absolute_offset,
+                length_sectors: length,
+                kind: classify_mode(&track.mode),
+                mode: track.mode.clone(),
+            });
+        }
+    }
+
+    if out.is_empty() {
+        return Err(AnalysisError::invalid_format(
+            "CUE has no tracks after parsing",
+        ));
+    }
+
+    Ok(out)
+}
+
+/// Read a CUE file from disk and return its absolute-sector layout.
+///
+/// - Reads the CUE text.
+/// - If `check_cue_compat` reports fixable CDRWin-isms, runs
+///   `convert_cue_to_standard` transparently before parsing. Unfixable
+///   CDRWin inputs (e.g. AUDIOFILE with a byte offset) return an error.
+/// - Resolves BIN file paths relative to the CUE's parent directory and
+///   stats each file for its size in bytes.
+pub fn read_cue_layout(path: &Path) -> Result<Vec<TrackLayout>, AnalysisError> {
+    let text = std::fs::read_to_string(path)?;
+    let cue_dir: PathBuf = path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(PathBuf::new);
+
+    let compat = check_cue_compat(&text);
+    let effective_text = if compat.is_standard() {
+        text
+    } else if let Some(reason) = compat.unfixable_reason.clone() {
+        return Err(AnalysisError::invalid_format(reason));
+    } else {
+        convert_cue_to_standard(&text, &cue_dir)?
+    };
+
+    let sheet = parse_cue(&effective_text)?;
+
+    compute_cue_layout(&sheet, |filename| {
+        let bin_path = cue_dir.join(filename);
+        let meta = std::fs::metadata(&bin_path).map_err(|e| {
+            AnalysisError::Io(std::io::Error::new(
+                e.kind(),
+                format!("BIN '{}': {}", bin_path.display(), e),
+            ))
+        })?;
+        Ok(meta.len())
+    })
 }
 
 #[cfg(test)]

@@ -2,9 +2,11 @@
 
 use junk_libs_core::AnalysisError;
 use std::io::SeekFrom;
+use std::path::Path;
 
 use crate::iso9660::{PrimaryVolumeDescriptor, parse_directory_record, parse_pvd_data};
-use crate::sector::MODE2_FORM1_DATA_OFFSET;
+use crate::layout::{LEAD_IN_FRAMES, TrackLayout, classify_mode};
+use crate::sector::{MODE2_FORM1_DATA_OFFSET, RAW_SECTOR_SIZE};
 
 /// Read 2048 bytes of user data from a given sector in a CHD file.
 ///
@@ -31,11 +33,20 @@ pub fn read_chd_sector_mode1(
     read_chd_sector_with_offset(reader, sector, crate::sector::MODE1_DATA_OFFSET as usize)
 }
 
-fn read_chd_sector_with_offset(
+/// Read a full 2352-byte raw sector from a CHD file.
+///
+/// Decompresses the hunk containing `sector` and returns the raw CD sector
+/// bytes (sync + header + user data + ECC/EDC for Mode 1/2 data sectors;
+/// straight PCM for audio sectors).
+///
+/// This is the low-level primitive underlying [`read_chd_sector`] /
+/// [`read_chd_sector_mode1`] for data tracks, and is the preferred entry
+/// point for audio-track consumers (e.g. PCM iteration) that need bytes
+/// without a Mode-specific user-data offset applied.
+pub fn read_chd_raw_sector(
     reader: &mut dyn junk_libs_core::ReadSeek,
     sector: u64,
-    data_offset: usize,
-) -> Result<[u8; 2048], AnalysisError> {
+) -> Result<[u8; RAW_SECTOR_SIZE as usize], AnalysisError> {
     reader.seek(SeekFrom::Start(0))?;
 
     let mut chd = chd::Chd::open(reader, None)
@@ -49,9 +60,7 @@ fn read_chd_sector_with_offset(
     let unit_bytes = chd.header().unit_bytes() as u64;
     let sector_byte_offset = sector * unit_bytes;
 
-    // Which hunk contains this offset?
     let hunk_num = sector_byte_offset / hunk_size;
-    // Offset within the hunk
     let offset_in_hunk = (sector_byte_offset % hunk_size) as usize;
 
     let mut hunk_buf = chd.get_hunksized_buffer();
@@ -66,16 +75,30 @@ fn read_chd_sector_with_offset(
             AnalysisError::other(format!("Failed to decompress CHD hunk {}: {}", hunk_num, e))
         })?;
 
-    // Within the raw sector, user data starts at the given offset
-    let final_offset = offset_in_hunk + data_offset;
-    if final_offset + crate::sector::ISO_SECTOR_SIZE as usize > hunk_buf.len() {
+    if offset_in_hunk + RAW_SECTOR_SIZE as usize > hunk_buf.len() {
         return Err(AnalysisError::corrupted_header(
-            "CHD sector data extends beyond hunk boundary",
+            "CHD raw sector extends beyond hunk boundary",
         ));
     }
 
+    let mut result = [0u8; RAW_SECTOR_SIZE as usize];
+    result.copy_from_slice(&hunk_buf[offset_in_hunk..offset_in_hunk + RAW_SECTOR_SIZE as usize]);
+    Ok(result)
+}
+
+fn read_chd_sector_with_offset(
+    reader: &mut dyn junk_libs_core::ReadSeek,
+    sector: u64,
+    data_offset: usize,
+) -> Result<[u8; 2048], AnalysisError> {
+    let raw = read_chd_raw_sector(reader, sector)?;
+    if data_offset + 2048 > raw.len() {
+        return Err(AnalysisError::corrupted_header(
+            "CHD sector data offset exceeds raw sector size",
+        ));
+    }
     let mut result = [0u8; 2048];
-    result.copy_from_slice(&hunk_buf[final_offset..final_offset + 2048]);
+    result.copy_from_slice(&raw[data_offset..data_offset + 2048]);
     Ok(result)
 }
 
@@ -322,6 +345,43 @@ pub fn parse_meta_field<'a>(text: &'a str, field: &str) -> Option<&'a str> {
         }
     }
     None
+}
+
+// -- Absolute-sector layout computation --
+
+/// Convert a slice of parsed `ChdTrackInfo` entries to `TrackLayout`s by
+/// adding the 150-frame lead-in to each track's linear start position.
+///
+/// CHD stores tracks in a linear sector space starting at 0; audio-CD
+/// identification conventions treat track 1 as starting at absolute
+/// sector 150. This helper bridges the two.
+pub fn compute_chd_layout(tracks: &[ChdTrackInfo]) -> Vec<TrackLayout> {
+    tracks
+        .iter()
+        .map(|t| TrackLayout {
+            number: t.track_number as u8,
+            absolute_offset: t.start_sector as u32 + LEAD_IN_FRAMES,
+            length_sectors: t.frames as u32,
+            kind: classify_mode(&t.track_type),
+            mode: t.track_type.clone(),
+        })
+        .collect()
+}
+
+/// Open a CHD file at `path`, parse its track metadata, and return the
+/// absolute-sector layout.
+pub fn read_chd_layout(path: &Path) -> Result<Vec<TrackLayout>, AnalysisError> {
+    let file = std::fs::File::open(path)?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut chd = chd::Chd::open(&mut reader, None)
+        .map_err(|e| AnalysisError::other(format!("Failed to open CHD: {}", e)))?;
+    let tracks = parse_chd_tracks(&mut chd)?;
+    if tracks.is_empty() {
+        return Err(AnalysisError::invalid_format(
+            "CHD has no CD track metadata",
+        ));
+    }
+    Ok(compute_chd_layout(&tracks))
 }
 
 #[cfg(test)]
