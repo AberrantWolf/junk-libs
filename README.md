@@ -1,13 +1,14 @@
 # junk-libs
 
-Shared Rust library infrastructure for the [retro-junk](https://github.com/AberrantWolf/retro-junk) and [phono-junk](https://github.com/AberrantWolf/phono-junk) tools.
+Shared Rust library infrastructure for the [retro-junk](https://github.com/AberrantWolf/retro-junk), [phono-junk](https://github.com/AberrantWolf/phono-junk), [print-junk](https://github.com/AberrantWolf/print-junk), and expat-junk tools.
 
-Domain-agnostic building blocks only: CD image parsing, streaming hashers, checksum descriptors, and common I/O traits. No retro-game or audio-specific semantics — those live in the consuming projects.
+Reusable building blocks that carry no app-specific semantics: CD image parsing, streaming hashers, checksum descriptors, common I/O traits, and PDF rendering. Domain meaning (retro-game, audio, document translation) lives in the consuming projects.
 
 ## Crates
 
 - **`junk-libs-core`** — Generic types. `AnalysisError` (thiserror), `MultiHasher` (streaming CRC32/SHA1/MD5), `ChecksumAlgorithm` / `ExpectedChecksum`, multi-disc filename grouping utilities, `ReadSeek` trait alias, byte/ASCII helpers.
 - **`junk-libs-disc`** — CD-ROM / optical disc parsing. CUE sheet parser (standard + CDRWin compatibility), CHD reader, ISO 9660 filesystem, CD sector constants, format detection.
+- **`junk-libs-pdfium`** — GUI-agnostic PDFium render core: rasterize PDF pages to RGBA and extract the text layer as per-character boxes. Its `build.rs` vendors the matching PDFium binary automatically (downloads from bblanchon/pdfium-binaries into `OUT_DIR`), so consumers need no manual setup; bind once per process via `instance()`. Shared by print-junk and expat-junk.
 
 ## Build
 

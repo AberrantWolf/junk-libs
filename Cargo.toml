@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "junk-libs-core",
     "junk-libs-disc",
+    "junk-libs-pdfium",
 ]
 
 [workspace.package]
@@ -13,6 +14,8 @@ license = "MIT"
 [workspace.dependencies]
 junk-libs-core = { path = "junk-libs-core" }
 junk-libs-disc = { path = "junk-libs-disc" }
+junk-libs-pdfium = { path = "junk-libs-pdfium" }
+anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 crc32fast = "1.4"
