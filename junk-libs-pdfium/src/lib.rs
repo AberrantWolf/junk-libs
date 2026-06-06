@@ -2,14 +2,20 @@
 //! extract the text layer as per-character boxes.
 //!
 //! Shared between the print-junk and expat-junk tools. Nothing here depends on a
-//! UI toolkit. Binding is dynamic at runtime: this crate's `build.rs` downloads
-//! `libpdfium` into `OUT_DIR` and exports its directory as `PDFIUM_LIB_DIR`,
-//! which [`instance`] loads via `option_env!`, falling back to a system library.
+//! UI toolkit. Binding is dynamic at runtime, searched in this order:
+//!
+//! 1. the build-vendored library — this crate's `build.rs` downloads `libpdfium`
+//!    into `OUT_DIR` and exports its directory as `PDFIUM_LIB_DIR`, which
+//!    [`instance`] reads via `option_env!` (present for in-tree dev/test builds);
+//! 2. a copy shipped **next to the executable** (packaged apps), searched
+//!    relative to the binary so it works regardless of the launch directory and
+//!    deterministically prefers our pinned binary over any system one;
+//! 3. a system-installed PDFium, as a last resort.
 //!
 //! The Cargo `pdfium_NNNN` feature and `build.rs`'s `PDFIUM_VERSION` must name the
 //! same PDFium build, or binding fails with `LoadLibraryError: undefined symbol`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use anyhow::{Context, Result};
@@ -32,17 +38,46 @@ fn render_lock() -> MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Bind PDFium: prefer the build-vendored library, fall back to the system one.
+/// Bind PDFium, preferring our pinned binary over any system copy (see the
+/// module docs for the search order). Each candidate is tried with an explicit
+/// path so we never depend on the OS loader's implicit search — which could bind
+/// a mismatched system library and fail with an undefined-symbol error.
 fn bind() -> Result<Pdfium> {
+    // 1. The build-vendored library. Its baked OUT_DIR path won't exist on an end
+    //    user's machine, so this is skipped there and we fall through to (2).
     if let Some(dir) = option_env!("PDFIUM_LIB_DIR")
         && let Ok(bindings) =
             Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(dir))
     {
         return Ok(Pdfium::new(bindings));
     }
+    // 2. A copy shipped alongside the executable (packaged apps).
+    for dir in bundled_lib_dirs() {
+        if let Ok(bindings) =
+            Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&dir))
+        {
+            return Ok(Pdfium::new(bindings));
+        }
+    }
+    // 3. A system-installed PDFium (version must match the pinned build).
     Pdfium::bind_to_system_library()
         .map(Pdfium::new)
-        .context("failed to bind to a vendored or system PDFium library")
+        .context("failed to bind to a vendored, bundled, or system PDFium library")
+}
+
+/// Directories to search for a PDFium library shipped next to the executable,
+/// covering the layouts our release artifacts use: beside the binary (Windows
+/// `.dll`), `../lib` (Linux AppImage `usr/bin` → `usr/lib`), and `../Frameworks`
+/// (macOS `.app` `Contents/MacOS` → `Contents/Frameworks`). Resolved relative to
+/// the executable, not the working directory, so it holds wherever the app is
+/// launched from. Empty if the executable path can't be determined.
+fn bundled_lib_dirs() -> Vec<PathBuf> {
+    let Some(dir) = std::env::current_exe().ok().and_then(|exe| {
+        exe.parent().map(Path::to_path_buf)
+    }) else {
+        return Vec::new();
+    };
+    vec![dir.join("../lib"), dir.join("../Frameworks"), dir]
 }
 
 /// The process-wide PDFium instance.
@@ -121,20 +156,13 @@ pub fn render_pdf(pdfium: &Pdfium, path: &Path, zoom: f32) -> Result<Vec<Rendere
 
     let mut pages = Vec::new();
     for (index, page) in document.pages().iter().enumerate() {
-        let width_pts = page.width().value;
-        let height_pts = page.height().value;
-        let config = make_render_config(width_pts, height_pts, zoom);
-        let bitmap = page
-            .render_with_config(&config)
-            .with_context(|| format!("rendering page {index}"))?;
-        let image = bitmap
-            .as_image()
-            .with_context(|| format!("converting page {index} bitmap"))?
-            .into_rgba8();
+        let (image, size_pts) =
+            render_page_image(&page, zoom).with_context(|| format!("rendering page {index}"))?;
+        let char_boxes = extract_char_boxes(&page, size_pts.1);
         pages.push(RenderedPage {
             image,
-            size_pts: (width_pts, height_pts),
-            char_boxes: extract_char_boxes(&page, height_pts),
+            size_pts,
+            char_boxes,
         });
     }
     Ok(pages)
@@ -153,19 +181,59 @@ pub fn render_page_bitmap(
     let document = pdfium
         .load_pdf_from_file(path, None)
         .with_context(|| format!("loading PDF {}", path.display()))?;
+    render_doc_page(&document, page_index, scale)
+}
+
+/// Like [`render_page_bitmap`] but for an in-memory PDF — e.g. a freshly typeset
+/// or imported document not yet written to disk. The byte buffer only needs to
+/// outlive the call.
+pub fn render_page_bitmap_from_bytes(
+    pdfium: &Pdfium,
+    bytes: &[u8],
+    page_index: usize,
+    scale: f32,
+) -> Result<(image::RgbaImage, (f32, f32))> {
+    let _guard = render_lock();
+    let document = pdfium
+        .load_pdf_from_byte_slice(bytes, None)
+        .context("loading PDF from memory")?;
+    render_doc_page(&document, page_index, scale)
+}
+
+/// Number of pages in a PDF, without rendering any of them — for sizing a viewer
+/// before the first page is rendered.
+pub fn page_count(pdfium: &Pdfium, path: &Path) -> Result<usize> {
+    let _guard = render_lock();
+    let document = pdfium
+        .load_pdf_from_file(path, None)
+        .with_context(|| format!("loading PDF {}", path.display()))?;
+    Ok(document.pages().len() as usize)
+}
+
+/// Render page `page_index` of an already-open document to RGBA at `scale`.
+/// Shared by the file- and bytes-based single-page entry points.
+fn render_doc_page(
+    document: &PdfDocument,
+    page_index: usize,
+    scale: f32,
+) -> Result<(image::RgbaImage, (f32, f32))> {
     let page = document
         .pages()
         .get(page_index as i32)
         .with_context(|| format!("page {page_index} out of range"))?;
+    render_page_image(&page, scale).with_context(|| format!("rendering page {page_index}"))
+}
+
+/// Render one already-loaded page to RGBA at `scale` (pixels per point), with its
+/// native point size. The shared core of every render entry point.
+fn render_page_image(page: &PdfPage, scale: f32) -> Result<(image::RgbaImage, (f32, f32))> {
     let width_pts = page.width().value;
     let height_pts = page.height().value;
     let config = make_render_config(width_pts, height_pts, scale);
-    let bitmap = page
-        .render_with_config(&config)
-        .with_context(|| format!("rendering page {page_index}"))?;
-    let image = bitmap
+    let image = page
+        .render_with_config(&config)?
         .as_image()
-        .with_context(|| format!("converting page {page_index} bitmap"))?
+        .context("converting page bitmap")?
         .into_rgba8();
     Ok((image, (width_pts, height_pts)))
 }
@@ -281,5 +349,84 @@ mod tests {
         assert!((55.0..95.0).contains(&h.x), "H.x = {}", h.x);
         assert!((90.0..150.0).contains(&h.y), "H.y = {}", h.y);
         assert!(h.w > 0.0 && h.h > 0.0, "degenerate H box {}×{}", h.w, h.h);
+    }
+
+    /// Render a single page straight from an in-memory PDF buffer (no file path),
+    /// the path the GUI uses for freshly typeset/imported documents.
+    #[test]
+    fn renders_a_page_from_bytes() {
+        let pdfium = instance().expect("bind PDFium");
+
+        let path = std::env::temp_dir().join("junk-libs-pdfium-bytes-test.pdf");
+        {
+            let mut document = pdfium.create_new_pdf().expect("create pdf");
+            document
+                .pages_mut()
+                .create_page_at_start(PdfPagePaperSize::a4())
+                .expect("create page");
+            document.save_to_file(&path).expect("save pdf");
+        }
+        let bytes = std::fs::read(&path).expect("read pdf bytes");
+        let _ = std::fs::remove_file(&path);
+
+        let (image, size_pts) =
+            render_page_bitmap_from_bytes(pdfium, &bytes, 0, 1.0).expect("render from bytes");
+        assert!(
+            (size_pts.0 - 595.0).abs() < 5.0 && (size_pts.1 - 842.0).abs() < 5.0,
+            "unexpected page size in points: {size_pts:?}"
+        );
+        assert!(
+            (570..=620).contains(&image.width()) && (820..=870).contains(&image.height()),
+            "unexpected raster size: {}×{}",
+            image.width(),
+            image.height()
+        );
+    }
+
+    /// The bundled-library search dirs must be derived relative to the executable
+    /// (not the cwd) and cover the release bundle layouts.
+    #[test]
+    fn bundled_lib_dirs_are_exe_relative() {
+        let dirs = bundled_lib_dirs();
+        assert!(
+            !dirs.is_empty(),
+            "should derive candidate dirs from current_exe"
+        );
+        let exe_dir = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        assert!(dirs.contains(&exe_dir), "same dir as the binary (Windows)");
+        assert!(
+            dirs.contains(&exe_dir.join("../lib")),
+            "../lib (Linux AppImage)"
+        );
+        assert!(
+            dirs.contains(&exe_dir.join("../Frameworks")),
+            "../Frameworks (macOS .app)"
+        );
+    }
+
+    /// Page count must come back without rendering, and match the pages created.
+    #[test]
+    fn counts_pages_without_rendering() {
+        let pdfium = instance().expect("bind PDFium");
+
+        let path = std::env::temp_dir().join("junk-libs-pdfium-count-test.pdf");
+        {
+            let mut document = pdfium.create_new_pdf().expect("create pdf");
+            for _ in 0..3 {
+                document
+                    .pages_mut()
+                    .create_page_at_start(PdfPagePaperSize::a4())
+                    .expect("create page");
+            }
+            document.save_to_file(&path).expect("save pdf");
+        }
+
+        let count = page_count(pdfium, &path).expect("count pages");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(count, 3);
     }
 }
