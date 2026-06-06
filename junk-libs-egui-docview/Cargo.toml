@@ -1,0 +1,11 @@
+[package]
+name = "junk-libs-egui-docview"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+egui.workspace = true
+image.workspace = true
+serde.workspace = true
+junk-libs-raster.workspace = true

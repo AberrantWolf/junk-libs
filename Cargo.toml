@@ -4,6 +4,9 @@ members = [
     "junk-libs-core",
     "junk-libs-disc",
     "junk-libs-pdfium",
+    "junk-libs-raster",
+    "junk-libs-egui-docview",
+    "junk-libs-egui-pdfdoc",
 ]
 
 [workspace.package]
@@ -15,9 +18,14 @@ license = "MIT"
 junk-libs-core = { path = "junk-libs-core" }
 junk-libs-disc = { path = "junk-libs-disc" }
 junk-libs-pdfium = { path = "junk-libs-pdfium" }
+junk-libs-raster = { path = "junk-libs-raster" }
+junk-libs-egui-docview = { path = "junk-libs-egui-docview" }
+junk-libs-egui-pdfdoc = { path = "junk-libs-egui-pdfdoc" }
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
+egui = "0.34"
+image = "0.25"
 crc32fast = "1.4"
 sha1 = "0.10"
 md5 = "0.7"

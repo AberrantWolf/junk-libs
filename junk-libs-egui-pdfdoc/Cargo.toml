@@ -1,0 +1,12 @@
+[package]
+name = "junk-libs-egui-pdfdoc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+junk-libs-egui-docview.workspace = true
+junk-libs-pdfium.workspace = true
+image.workspace = true
+serde.workspace = true
+anyhow.workspace = true

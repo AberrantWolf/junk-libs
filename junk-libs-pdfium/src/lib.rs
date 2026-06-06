@@ -10,13 +10,27 @@
 //! same PDFium build, or binding fails with `LoadLibraryError: undefined symbol`.
 
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use anyhow::{Context, Result};
 use pdfium_render::prelude::*;
 
 /// Cap any single render dimension to avoid OOM at extreme zoom.
 const MAX_RENDER_DIMENSION: i32 = 4096;
+
+/// Serialize whole render operations across threads.
+///
+/// The `thread_safe` crate feature guards each individual PDFium FFI call, but a
+/// single render is a *sequence* of calls (load document → iterate pages → render
+/// → read bitmap → extract text) over shared library state. Letting two such
+/// sequences interleave corrupts that state and segfaults, so each render entry
+/// point holds this lock for its whole duration. Rendering is the bottleneck
+/// anyway; correctness wins over the lost parallelism. Poison-tolerant: a panic
+/// mid-render shouldn't wedge every later render.
+fn render_lock() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// Bind PDFium: prefer the build-vendored library, fall back to the system one.
 fn bind() -> Result<Pdfium> {
@@ -100,6 +114,7 @@ pub struct RenderedPage {
 
 /// Load a PDF and render every page to RGBA at the given zoom (1.0 = 100%).
 pub fn render_pdf(pdfium: &Pdfium, path: &Path, zoom: f32) -> Result<Vec<RenderedPage>> {
+    let _guard = render_lock();
     let document = pdfium
         .load_pdf_from_file(path, None)
         .with_context(|| format!("loading PDF {}", path.display()))?;
@@ -134,6 +149,7 @@ pub fn render_page_bitmap(
     page_index: usize,
     scale: f32,
 ) -> Result<(image::RgbaImage, (f32, f32))> {
+    let _guard = render_lock();
     let document = pdfium
         .load_pdf_from_file(path, None)
         .with_context(|| format!("loading PDF {}", path.display()))?;
