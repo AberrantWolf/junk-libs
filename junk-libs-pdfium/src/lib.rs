@@ -125,6 +125,35 @@ pub fn render_pdf(pdfium: &Pdfium, path: &Path, zoom: f32) -> Result<Vec<Rendere
     Ok(pages)
 }
 
+/// Render a single page to RGBA at the given scale (pixels per point) — bitmap
+/// only, no text extraction. For re-rendering a page at a higher resolution when
+/// the viewer zooms in. Returns the image and the page's native size in points.
+pub fn render_page_bitmap(
+    pdfium: &Pdfium,
+    path: &Path,
+    page_index: usize,
+    scale: f32,
+) -> Result<(image::RgbaImage, (f32, f32))> {
+    let document = pdfium
+        .load_pdf_from_file(path, None)
+        .with_context(|| format!("loading PDF {}", path.display()))?;
+    let page = document
+        .pages()
+        .get(page_index as i32)
+        .with_context(|| format!("page {page_index} out of range"))?;
+    let width_pts = page.width().value;
+    let height_pts = page.height().value;
+    let config = make_render_config(width_pts, height_pts, scale);
+    let bitmap = page
+        .render_with_config(&config)
+        .with_context(|| format!("rendering page {page_index}"))?;
+    let image = bitmap
+        .as_image()
+        .with_context(|| format!("converting page {page_index} bitmap"))?
+        .into_rgba8();
+    Ok((image, (width_pts, height_pts)))
+}
+
 /// Extract the text layer of `page` as character boxes in top-left page space.
 /// Returns empty if the page has no text. Uses *loose* glyph bounds (the full
 /// character cell, including side bearing) so adjacent chars tile cleanly into
