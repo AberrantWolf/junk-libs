@@ -42,9 +42,18 @@ pub trait PageModel {
     fn page_size(&self, page: usize) -> Option<(f32, f32)>;
     /// The page's rasterized bitmap (RGBA), if rendered.
     fn page_bitmap(&self, page: usize) -> Option<&image::RgbaImage>;
-    /// Re-render a page's bitmap at `scale` (pixels per point) so it stays crisp
-    /// when zoomed in. Implementations that can't re-render (e.g. image sources)
-    /// should make this a no-op.
+    /// Request that a page's bitmap be (re)rendered at `scale` (pixels per point)
+    /// so it stays crisp when zoomed in.
+    ///
+    /// This is a **fire-and-forget request**, not a synchronous getter. A host may
+    /// fulfill it inline (render and update the bitmap before returning) or
+    /// asynchronously (kick off a background render and expose the result via
+    /// [`page_bitmap`](PageModel::page_bitmap) once ready). The widget calls this
+    /// only when the desired `(page, scale)` changes — never every frame — so a
+    /// slow or async host is not spammed with duplicate requests. Until a new
+    /// bitmap is available, the widget keeps displaying the current one.
+    ///
+    /// Implementations that can't re-render (e.g. image sources) make this a no-op.
     fn rerender_page(&mut self, page: usize, scale: f32);
     /// The regions on `page`, as `(id, rect)` in page points.
     fn regions_on(&self, page: usize) -> Vec<(RegionId, Rect)>;
@@ -179,6 +188,13 @@ pub struct DocView {
     /// Last frame's scroll offset, mirrored from the `ScrollArea` so we can drive
     /// it directly when zooming (to anchor the zoom the same frame, no settle lag).
     scroll_offset: Vec2,
+    /// The `(page, scale)` of the last [`PageModel::rerender_page`] request, so we
+    /// fire it only when the desired target changes — not every frame. This makes
+    /// the render seam fire-and-forget: an async host receives one request per
+    /// (page, scale) and isn't re-asked while it works. `None` page means nothing
+    /// has been requested yet (or state was reset).
+    requested_page: Option<usize>,
+    requested_scale: f32,
 }
 
 impl Default for DocView {
@@ -192,6 +208,8 @@ impl Default for DocView {
             drag: Drag::Idle,
             panning: false,
             scroll_offset: Vec2::ZERO,
+            requested_page: None,
+            requested_scale: 0.0,
         }
     }
 }
@@ -206,6 +224,8 @@ impl DocView {
         self.scroll_offset = Vec2::ZERO;
         self.fit = true;
         self.zoom = 1.0;
+        self.requested_page = None;
+        self.requested_scale = 0.0;
     }
 
     /// Render the page and handle interaction. `extra_controls` is invoked inside
@@ -294,14 +314,22 @@ impl DocView {
             zoom_factor *= self.zoom / old;
         }
 
-        // Re-render the current page so its raster matches the on-screen size
-        // (zoom × device pixels-per-point), keeping it crisp at high zoom.
-        // Quantized so scrolling the zoom doesn't re-render every frame; a no-op
-        // for image sources.
+        // Request a render of the current page at a scale matching the on-screen
+        // size (zoom × device pixels-per-point), keeping it crisp at high zoom.
+        // Quantized so scrolling the zoom doesn't change the target every frame.
+        // Edge-triggered on the requested `(page, scale)` — not the current
+        // bitmap's scale — so the request fires once per target and a slow/async
+        // host isn't re-asked while it works (a sync host still lands the new
+        // bitmap the same frame, so behavior there is unchanged). A no-op for
+        // image sources.
         let ppp = ui.ctx().pixels_per_point();
         let target_scale = render_scale_for(self.zoom, ppp);
-        if (page_scale(&*model, *current_page) - target_scale).abs() > 0.1 {
+        if self.requested_page != Some(*current_page)
+            || (self.requested_scale - target_scale).abs() > 0.1
+        {
             model.rerender_page(*current_page, target_scale);
+            self.requested_page = Some(*current_page);
+            self.requested_scale = target_scale;
         }
 
         // (Re)build the texture when the page changed or its raster scale changed.
