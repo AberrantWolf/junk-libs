@@ -169,6 +169,34 @@ enum Hover {
     Handle(RegionId, usize),
 }
 
+/// Per-frame geometry of the displayed page, handed by the view core
+/// ([`DocView::show_page`]) to the region-editing layer so it can hit-test and
+/// paint in the exact space the core laid the page out in. All fields are `Copy`.
+#[derive(Clone, Copy)]
+struct Canvas {
+    /// Index of the page being shown.
+    page: usize,
+    /// Screen rect the page image occupies this frame (post zoom/scroll).
+    rect: ERect,
+    /// Screen pixels per page point (`rect.width() / page_width_pts`).
+    scale: f32,
+    /// The current bitmap's render scale (px/pt), for overlay rasterization.
+    bitmap_scale: f32,
+    /// Whether the view is being middle-button panned (suppresses region hover).
+    panning: bool,
+}
+
+impl Canvas {
+    /// Page point → screen position this frame.
+    fn to_screen(&self, p: Pos2) -> Pos2 {
+        self.rect.min + p.to_vec2() * self.scale
+    }
+    /// Screen position → page point this frame.
+    fn to_page(&self, s: Pos2) -> Pos2 {
+        ((s - self.rect.min) / self.scale).to_pos2()
+    }
+}
+
 /// The interactive page-view widget. Holds only transient view state; the
 /// document lives in the host's [`PageModel`].
 pub struct DocView {
@@ -228,18 +256,20 @@ impl DocView {
         self.requested_scale = 0.0;
     }
 
-    /// Render the page and handle interaction. `extra_controls` is invoked inside
-    /// the control bar so the host can add its own buttons (it should add its own
-    /// separator if it wants one). Returns `true` if a region was added, moved,
-    /// resized, or deleted this frame (so the caller can mark its state dirty).
-    pub fn show(
+    /// Shared view core: control bar (zoom, fit, page nav, host `extra_controls`),
+    /// fit/Ctrl-scroll zoom, the fire-and-forget render request, the page texture,
+    /// and the scrolled, pannable page image. Once the page is laid out it invokes
+    /// `on_canvas` *inside* the scroll area with the per-frame [`Canvas`] geometry
+    /// and a lent `&mut Drag` + `&mut model`, so the host layer can hit-test and
+    /// paint in the same space; `on_canvas` returns whether it edited anything.
+    /// [`show`](Self::show) supplies region editing here; [`show_readonly`] a no-op.
+    fn show_page<M: PageModel>(
         &mut self,
         ui: &mut egui::Ui,
-        model: &mut impl PageModel,
+        model: &mut M,
         current_page: &mut usize,
-        selected: &mut Option<RegionId>,
-        overlay: &mut impl RegionOverlay,
         extra_controls: impl FnOnce(&mut egui::Ui),
+        on_canvas: impl FnOnce(&mut egui::Ui, &mut M, &mut Drag, &egui::Response, Canvas) -> bool,
     ) -> bool {
         let total_pages = model.page_count();
         let mut edited = false;
@@ -403,15 +433,10 @@ impl DocView {
             } else {
                 1.0
             };
-            let to_screen = |p: Pos2| rect.min + p.to_vec2() * scale;
-            let to_page = |s: Pos2| ((s - rect.min) / scale).to_pos2();
 
-            // Regions on this page (id + geometry), for hit-testing this frame.
-            let regions = model.regions_on(*current_page);
-
-            // --- interaction ---------------------------------------------------
-            // Middle-button drag pans the view (grab-scroll), and is handled
-            // before region logic so it never starts drawing a region.
+            // Middle-button drag pans the view (grab-scroll). Handled here in the
+            // core so it works in display-only mode too, and before the host layer
+            // so it never starts a region drag.
             let middle_down = ui.input(|i| i.pointer.middle_down());
             if middle_down && (self.panning || resp.contains_pointer()) {
                 self.panning = true;
@@ -425,164 +450,17 @@ impl DocView {
                 self.panning = false;
             }
 
-            // Region draw/move/resize is the *primary* button only — the `_by`
-            // variants keep middle/secondary buttons out of it.
-            // Start from the *press origin*, not interact_pointer_pos: the latter
-            // is only sampled once the drag threshold is crossed, which offsets
-            // the start by a few pixels from where the user actually clicked.
-            if resp.drag_started_by(egui::PointerButton::Primary) {
-                if let Some(press) = ui.input(|i| i.pointer.press_origin()) {
-                    self.drag = decide_drag(&regions, *selected, to_page(press), scale);
-                    match self.drag {
-                        Drag::Moving { id, .. } | Drag::Resizing { id, .. } => {
-                            *selected = Some(id);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            if resp.dragged_by(egui::PointerButton::Primary) {
-                if let Some(ptr) = resp.interact_pointer_pos() {
-                    let pp = to_page(ptr);
-                    match &mut self.drag {
-                        Drag::Drawing { current, .. } => *current = pp,
-                        Drag::Moving { id, grab } => {
-                            if let Some(r) = model.region_rect_mut(*id) {
-                                r.x = pp.x - grab.x;
-                                r.y = pp.y - grab.y;
-                                edited = true;
-                            }
-                        }
-                        Drag::Resizing { id, fixed } => {
-                            if let Some(r) = model.region_rect_mut(*id) {
-                                *r = norm_rect(*fixed, pp);
-                                edited = true;
-                            }
-                        }
-                        Drag::Idle => {}
-                    }
-                }
-            }
-            if resp.drag_stopped_by(egui::PointerButton::Primary) {
-                if let Drag::Drawing { start, current } = self.drag {
-                    let r = norm_rect(start, current);
-                    if r.w > 2.0 && r.h > 2.0 {
-                        *selected = Some(model.add_region(*current_page, r));
-                        edited = true;
-                    }
-                }
-                self.drag = Drag::Idle;
-            }
-            if resp.clicked() {
-                if let Some(ptr) = resp.interact_pointer_pos() {
-                    *selected = topmost_at(&regions, to_page(ptr));
-                }
-            }
-
-            // What the idle pointer is over — for the hover highlight + cursor, so
-            // the user can tell when a press will grab a region/handle instead of
-            // drawing. Skipped mid-drag/pan (the action is already decided).
-            let hover = if matches!(self.drag, Drag::Idle) && !self.panning {
-                resp.hover_pos()
-                    .map(|p| hover_target(&regions, *selected, to_page(p), scale))
-                    .unwrap_or(Hover::None)
-            } else {
-                Hover::None
+            // Hand the laid-out page to the host layer (region editing in `show`,
+            // a no-op in `show_readonly`) to interact with and paint over.
+            let canvas = Canvas {
+                page: *current_page,
+                rect,
+                scale,
+                bitmap_scale,
+                panning: self.panning,
             };
-            if !self.panning {
-                match hover {
-                    Hover::Handle(_, i) => ui.ctx().set_cursor_icon(if i == 0 || i == 3 {
-                        egui::CursorIcon::ResizeNwSe
-                    } else {
-                        egui::CursorIcon::ResizeNeSw
-                    }),
-                    Hover::Body(_) => ui.ctx().set_cursor_icon(egui::CursorIcon::Grab),
-                    Hover::None if resp.hovered() => {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair)
-                    }
-                    Hover::None => {}
-                }
-            }
-            if let Some(id) = *selected {
-                // Don't treat Delete/Backspace as "delete region" while a text
-                // widget (e.g. a host editor) holds keyboard focus — there those
-                // keys edit the text.
-                let editing = ui.memory(|m| m.focused().is_some());
-                let del = !editing
-                    && ui.input(|i| {
-                        i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)
-                    });
-                if del {
-                    model.remove_region(id);
-                    *selected = None;
-                    edited = true;
-                }
-            }
-
-            // --- paint ---------------------------------------------------------
-            let painter = ui.painter_at(rect.expand(HANDLE));
-            let egui_ctx = ui.ctx().clone();
-            // Re-fetch so adds/removes/moves from this frame's interaction show.
-            let regions = model.regions_on(*current_page);
-            let page_bitmap = model.page_bitmap(*current_page);
-            for (id, region_rect) in &regions {
-                let id = *id;
-                let scr = ERect::from_min_size(
-                    to_screen(egui::pos2(region_rect.x, region_rect.y)),
-                    egui::vec2(region_rect.w * scale, region_rect.h * scale),
-                );
-                let is_sel = *selected == Some(id);
-
-                // Let the host paint its overlay (e.g. a translation patch) with the
-                // per-frame screen geometry; if it drew, skip our background fill.
-                let drew_overlay = if let Some(bmp) = page_bitmap {
-                    let octx = OverlayCtx {
-                        id,
-                        page_rect: *region_rect,
-                        screen_rect: scr,
-                        painter: &painter,
-                        egui_ctx: &egui_ctx,
-                        page_bitmap: bmp,
-                        bitmap_scale,
-                    };
-                    overlay.paint(&octx)
-                } else {
-                    false
-                };
-
-                // A region the idle pointer is over (a press would grab it) gets a
-                // brighter, heavier outline so accidental grabs are obvious.
-                let is_hover_body = matches!(hover, Hover::Body(hid) if hid == id);
-                let (stroke_color, fill, stroke_w) = if is_sel {
-                    (ACCENT, ACCENT_FILL, 2.0)
-                } else if is_hover_body {
-                    (HOVER, REGION_FILL, 2.0)
-                } else {
-                    (REGION_STROKE, REGION_FILL, 1.5)
-                };
-                if !drew_overlay {
-                    painter.rect_filled(scr, 2.0, fill);
-                }
-                painter.rect_stroke(
-                    scr,
-                    2.0,
-                    Stroke::new(stroke_w, stroke_color),
-                    egui::StrokeKind::Inside,
-                );
-                if is_sel {
-                    let corners =
-                        [scr.left_top(), scr.right_top(), scr.left_bottom(), scr.right_bottom()];
-                    for (i, corner) in corners.iter().enumerate() {
-                        // Enlarge + recolor the handle under the pointer.
-                        let on = matches!(hover, Hover::Handle(hid, hi) if hid == id && hi == i);
-                        let h = ERect::from_center_size(*corner, Vec2::splat(if on { HANDLE * 1.6 } else { HANDLE }));
-                        painter.rect_filled(h, 1.0, if on { HOVER } else { ACCENT });
-                    }
-                }
-            }
-            if let Drag::Drawing { start, current } = self.drag {
-                let scr = ERect::from_two_pos(to_screen(start), to_screen(current));
-                painter.rect_stroke(scr, 0.0, Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
+            if on_canvas(ui, model, &mut self.drag, &resp, canvas) {
+                edited = true;
             }
         });
         // Mirror the (possibly clamped) offset so next frame's zoom math starts
@@ -590,6 +468,214 @@ impl DocView {
         self.scroll_offset = out.state.offset;
 
         edited
+    }
+
+    /// Render the page with interactive region editing: draw, select, move,
+    /// resize, and delete rectangular regions, with the host painting each
+    /// region's content via `overlay`. `extra_controls` adds host buttons to the
+    /// control bar (add your own separator if you want one). Returns `true` if a
+    /// region was added, moved, resized, or deleted this frame (mark state dirty).
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        model: &mut impl PageModel,
+        current_page: &mut usize,
+        selected: &mut Option<RegionId>,
+        overlay: &mut impl RegionOverlay,
+        extra_controls: impl FnOnce(&mut egui::Ui),
+    ) -> bool {
+        self.show_page(
+            ui,
+            model,
+            current_page,
+            extra_controls,
+            |ui, model, drag, resp, canvas| {
+                let mut edited = false;
+                // Regions on this page (id + geometry), for hit-testing this frame.
+                let regions = model.regions_on(canvas.page);
+
+                // --- interaction -----------------------------------------------
+                // Region draw/move/resize is the *primary* button only — the `_by`
+                // variants keep middle/secondary buttons out of it. Start from the
+                // *press origin*, not interact_pointer_pos: the latter is only
+                // sampled once the drag threshold is crossed, which offsets the
+                // start by a few pixels from where the user actually clicked.
+                if resp.drag_started_by(egui::PointerButton::Primary) {
+                    if let Some(press) = ui.input(|i| i.pointer.press_origin()) {
+                        *drag = decide_drag(&regions, *selected, canvas.to_page(press), canvas.scale);
+                        match *drag {
+                            Drag::Moving { id, .. } | Drag::Resizing { id, .. } => {
+                                *selected = Some(id);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                if resp.dragged_by(egui::PointerButton::Primary) {
+                    if let Some(ptr) = resp.interact_pointer_pos() {
+                        let pp = canvas.to_page(ptr);
+                        match drag {
+                            Drag::Drawing { current, .. } => *current = pp,
+                            Drag::Moving { id, grab } => {
+                                if let Some(r) = model.region_rect_mut(*id) {
+                                    r.x = pp.x - grab.x;
+                                    r.y = pp.y - grab.y;
+                                    edited = true;
+                                }
+                            }
+                            Drag::Resizing { id, fixed } => {
+                                if let Some(r) = model.region_rect_mut(*id) {
+                                    *r = norm_rect(*fixed, pp);
+                                    edited = true;
+                                }
+                            }
+                            Drag::Idle => {}
+                        }
+                    }
+                }
+                if resp.drag_stopped_by(egui::PointerButton::Primary) {
+                    if let Drag::Drawing { start, current } = *drag {
+                        let r = norm_rect(start, current);
+                        if r.w > 2.0 && r.h > 2.0 {
+                            *selected = Some(model.add_region(canvas.page, r));
+                            edited = true;
+                        }
+                    }
+                    *drag = Drag::Idle;
+                }
+                if resp.clicked() {
+                    if let Some(ptr) = resp.interact_pointer_pos() {
+                        *selected = topmost_at(&regions, canvas.to_page(ptr));
+                    }
+                }
+
+                // What the idle pointer is over — for the hover highlight + cursor,
+                // so the user can tell when a press will grab a region/handle
+                // instead of drawing. Skipped mid-drag/pan (the action is decided).
+                let hover = if matches!(*drag, Drag::Idle) && !canvas.panning {
+                    resp.hover_pos()
+                        .map(|p| hover_target(&regions, *selected, canvas.to_page(p), canvas.scale))
+                        .unwrap_or(Hover::None)
+                } else {
+                    Hover::None
+                };
+                if !canvas.panning {
+                    match hover {
+                        Hover::Handle(_, i) => ui.ctx().set_cursor_icon(if i == 0 || i == 3 {
+                            egui::CursorIcon::ResizeNwSe
+                        } else {
+                            egui::CursorIcon::ResizeNeSw
+                        }),
+                        Hover::Body(_) => ui.ctx().set_cursor_icon(egui::CursorIcon::Grab),
+                        Hover::None if resp.hovered() => {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair)
+                        }
+                        Hover::None => {}
+                    }
+                }
+                if let Some(id) = *selected {
+                    // Don't treat Delete/Backspace as "delete region" while a text
+                    // widget (e.g. a host editor) holds keyboard focus — there those
+                    // keys edit the text.
+                    let editing = ui.memory(|m| m.focused().is_some());
+                    let del = !editing
+                        && ui.input(|i| {
+                            i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)
+                        });
+                    if del {
+                        model.remove_region(id);
+                        *selected = None;
+                        edited = true;
+                    }
+                }
+
+                // --- paint -----------------------------------------------------
+                let painter = ui.painter_at(canvas.rect.expand(HANDLE));
+                let egui_ctx = ui.ctx().clone();
+                // Re-fetch so adds/removes/moves from this frame's interaction show.
+                let regions = model.regions_on(canvas.page);
+                let page_bitmap = model.page_bitmap(canvas.page);
+                for (id, region_rect) in &regions {
+                    let id = *id;
+                    let scr = ERect::from_min_size(
+                        canvas.to_screen(egui::pos2(region_rect.x, region_rect.y)),
+                        egui::vec2(region_rect.w * canvas.scale, region_rect.h * canvas.scale),
+                    );
+                    let is_sel = *selected == Some(id);
+
+                    // Let the host paint its overlay (e.g. a translation patch) with
+                    // the per-frame screen geometry; if it drew, skip our fill.
+                    let drew_overlay = if let Some(bmp) = page_bitmap {
+                        let octx = OverlayCtx {
+                            id,
+                            page_rect: *region_rect,
+                            screen_rect: scr,
+                            painter: &painter,
+                            egui_ctx: &egui_ctx,
+                            page_bitmap: bmp,
+                            bitmap_scale: canvas.bitmap_scale,
+                        };
+                        overlay.paint(&octx)
+                    } else {
+                        false
+                    };
+
+                    // A region the idle pointer is over (a press would grab it) gets
+                    // a brighter, heavier outline so accidental grabs are obvious.
+                    let is_hover_body = matches!(hover, Hover::Body(hid) if hid == id);
+                    let (stroke_color, fill, stroke_w) = if is_sel {
+                        (ACCENT, ACCENT_FILL, 2.0)
+                    } else if is_hover_body {
+                        (HOVER, REGION_FILL, 2.0)
+                    } else {
+                        (REGION_STROKE, REGION_FILL, 1.5)
+                    };
+                    if !drew_overlay {
+                        painter.rect_filled(scr, 2.0, fill);
+                    }
+                    painter.rect_stroke(
+                        scr,
+                        2.0,
+                        Stroke::new(stroke_w, stroke_color),
+                        egui::StrokeKind::Inside,
+                    );
+                    if is_sel {
+                        let corners =
+                            [scr.left_top(), scr.right_top(), scr.left_bottom(), scr.right_bottom()];
+                        for (i, corner) in corners.iter().enumerate() {
+                            // Enlarge + recolor the handle under the pointer.
+                            let on = matches!(hover, Hover::Handle(hid, hi) if hid == id && hi == i);
+                            let h = ERect::from_center_size(*corner, Vec2::splat(if on { HANDLE * 1.6 } else { HANDLE }));
+                            painter.rect_filled(h, 1.0, if on { HOVER } else { ACCENT });
+                        }
+                    }
+                }
+                if let Drag::Drawing { start, current } = *drag {
+                    let scr = ERect::from_two_pos(canvas.to_screen(start), canvas.to_screen(current));
+                    painter.rect_stroke(scr, 0.0, Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
+                }
+                edited
+            },
+        )
+    }
+
+    /// Render the page **display-only**: zoom, fit, pan, and page navigation, with
+    /// no region drawing, selection, or overlay. For hosts that only preview pages
+    /// (e.g. an imposition preview). `extra_controls` adds host buttons to the bar.
+    pub fn show_readonly(
+        &mut self,
+        ui: &mut egui::Ui,
+        model: &mut impl PageModel,
+        current_page: &mut usize,
+        extra_controls: impl FnOnce(&mut egui::Ui),
+    ) {
+        self.show_page(
+            ui,
+            model,
+            current_page,
+            extra_controls,
+            |_ui, _model, _drag, _resp, _canvas| false,
+        );
     }
 }
 
