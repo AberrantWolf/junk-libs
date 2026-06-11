@@ -1,0 +1,23 @@
+[package]
+name = "junk-libs-platen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["backend-hayro"]
+# Pure-Rust engine (hayro). No binaries to download or ship.
+backend-hayro = ["dep:hayro"]
+# Legacy engine, kept for A/B comparison during migration and as a dev-time
+# test oracle. Pulls in junk-libs-pdfium and its binary download machinery.
+backend-pdfium = ["dep:junk-libs-pdfium"]
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+image = "0.25"
+log.workspace = true
+# Pinned exact: hayro is pre-1.0 and moving fast; bump deliberately, re-running
+# the A/B render comparison against the pdfium backend when you do.
+hayro = { version = "=0.7.1", optional = true, features = ["embed-fonts"] }
+junk-libs-pdfium = { workspace = true, optional = true }
