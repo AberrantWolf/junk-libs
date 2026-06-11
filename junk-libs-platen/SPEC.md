@@ -141,12 +141,20 @@ for placement — projected to top-left page points. Details that matter:
   (`tests/ab_backends.rs`, run with `--features backend-pdfium`) confirm
   identical strings, compatible geometry, and <2% pixel divergence vs pdfium
   on the fixture. Corpus-scale validation happens in M2.
-- **M2 — Migration.** Cut over `junk-libs-egui-pdfdoc`, print-junk-gui's
-  viewer handlers, and pdf-import's hires probe to `junk-libs-platen`; run
-  the A/B harness across the real corpora; then delete the PDFium
+- **M2 — Migration.** Cut over every consumer, then delete the PDFium
   download/bundle machinery from release packaging and demote
-  `backend-pdfium` to dev-only (or delete it). *Exit: print-junk and
-  expat-junk ship with no PDFium anywhere.*
+  `backend-pdfium` to dev-only (or delete it). Call-site inventory:
+  - `junk-libs-egui-pdfdoc` (`open_pdf`, `rerender_page`) — covers the main
+    viewing path of *both* GUI apps;
+  - print-junk: `print-junk-gui/src/handlers/viewer.rs` (render + page_count)
+    and `pdf-import/src/archive.rs` hires probe (`hires` feature);
+  - expat-junk: direct uses are test-side — `src/export.rs` render-back
+    verification of exported PDFs (×2) and `tests/pdfium_wiring.rs` (binary
+    wiring guard, obsolete under platen — delete); plus the
+    `junk-libs-pdfium` git dep in its Cargo.toml.
+
+  Run the A/B harness across the real corpora before each cutover. *Exit:
+  print-junk and expat-junk build, test, and ship with no PDFium anywhere.*
 - **M3 — Hardening & upstream.** Fuzz `open`, file upstream PRs (password
   normalization, warning coverage, text-layer findings to #1049), perf pass
   (parallel prefetch in the viewer now that the engine allows it).
