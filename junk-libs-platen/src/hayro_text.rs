@@ -54,14 +54,27 @@ pub(crate) fn extract_char_boxes<'a>(
     recorder.boxes
 }
 
+/// Synthesize a space when the gap between two glyph cells on the same line
+/// exceeds this fraction of the cell height (≈ font size). Word gaps in PDFs
+/// that position words via TJ kerning (most LaTeX output — no space glyphs at
+/// all) are typically 0.2–0.35 em; inter-letter kerning stays well under 0.1.
+const SPACE_GAP_FRACTION: f64 = 0.18;
+
 #[derive(Default)]
 struct TextRecorder {
     boxes: Vec<CharBox>,
+    /// Cell of the last *glyph* recorded (synthetic whitespace excluded):
+    /// dedup reference for fill+stroke double-reports and anchor for
+    /// whitespace synthesis.
+    last_cell: Option<(char, Rect)>,
 }
 
 impl TextRecorder {
     /// Append `text` spread evenly across `cell` (a device-space rect in
-    /// top-left page points). Multi-char entries come from ligatures and
+    /// top-left page points), synthesizing whitespace relative to the
+    /// previous glyph. Like pdfium's text API, we emit characters PDFs often
+    /// don't contain: a space for a word-sized horizontal gap, a newline on
+    /// baseline change. Multi-char entries come from ligatures and
     /// multi-codepoint ToUnicode mappings.
     fn push(&mut self, text: &BfString, cell: Rect) {
         let mut buf = [0u8; 4];
@@ -77,14 +90,15 @@ impl TextRecorder {
         // Fill+stroke render modes report the same glyph twice; collapse the
         // exact repeat.
         let first = chars.chars().next().expect("checked non-empty");
-        if let Some(last) = self.boxes.last()
-            && last.ch == first
-            && (f64::from(last.x) - cell.x0).abs() < 1e-3
-            && (f64::from(last.y) - cell.y0).abs() < 1e-3
+        if let Some((last_ch, last)) = self.last_cell
+            && last_ch == first
+            && (last.x0 - cell.x0).abs() < 1e-3
+            && (last.y0 - cell.y0).abs() < 1e-3
         {
             return;
         }
 
+        self.synthesize_whitespace(cell);
         let slice_w = cell.width() / n as f64;
         for (i, ch) in chars.chars().enumerate() {
             self.boxes.push(CharBox {
@@ -93,6 +107,48 @@ impl TextRecorder {
                 y: cell.y0 as f32,
                 w: slice_w as f32,
                 h: cell.height() as f32,
+            });
+        }
+        self.last_cell = Some((first, cell));
+    }
+
+    /// Emit a synthetic ' ' or '\n' between the previous glyph and `cell`
+    /// when their spacing implies one. Skipped when the document carries a
+    /// real space glyph (it arrives as a normal cell and resets the anchor).
+    fn synthesize_whitespace(&mut self, cell: Rect) {
+        let Some((_, last)) = self.last_cell else {
+            return;
+        };
+        let same_line = {
+            let overlap = last.y1.min(cell.y1) - last.y0.max(cell.y0);
+            overlap > 0.5 * last.height().min(cell.height())
+        };
+        let ref_h = last.height().max(cell.height());
+
+        if !same_line {
+            // Zero-width box at the end of the previous glyph; consumers
+            // treat zero-area whitespace boxes via center-point tests.
+            self.boxes.push(CharBox {
+                ch: '\n',
+                x: last.x1 as f32,
+                y: last.y0 as f32,
+                w: 0.0,
+                h: last.height() as f32,
+            });
+            return;
+        }
+
+        let gap = cell.x0 - last.x1;
+        if gap > SPACE_GAP_FRACTION * ref_h {
+            // Word gap (or a column jump — either way a separator). The box
+            // spans the gap so region selection picks it up like pdfium's
+            // synthetic spaces.
+            self.boxes.push(CharBox {
+                ch: if gap > 2.0 * ref_h { '\n' } else { ' ' },
+                x: last.x1 as f32,
+                y: cell.y0.min(last.y0) as f32,
+                w: gap as f32,
+                h: cell.height().max(last.height()) as f32,
             });
         }
     }

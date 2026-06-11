@@ -12,6 +12,10 @@ backend-hayro = ["dep:hayro"]
 # test oracle. Pulls in junk-libs-pdfium and its binary download machinery.
 backend-pdfium = ["dep:junk-libs-pdfium"]
 
+[[example]]
+name = "ab_compare"
+required-features = ["backend-hayro", "backend-pdfium"]
+
 [dependencies]
 anyhow.workspace = true
 thiserror.workspace = true

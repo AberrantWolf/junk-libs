@@ -5,7 +5,11 @@
 /// and a line of Helvetica text. Offsets are computed, not hard-coded, so the
 /// fixture stays valid if the content changes.
 pub fn minimal_pdf() -> Vec<u8> {
-    let content = b"0 0 0 rg 100 100 200 200 re f BT /F1 24 Tf 72 720 Td (Hello) Tj ET";
+    // Two text lines; the second positions "world" via TJ kerning (-280/1000
+    // em) with no space glyph, the way LaTeX output spaces words.
+    let content = b"0 0 0 rg 100 100 200 200 re f \
+                    BT /F1 24 Tf 72 720 Td (Hello) Tj ET \
+                    BT /F1 24 Tf 72 690 Td [(big) -280 (world)] TJ ET";
     let objects: Vec<Vec<u8>> = vec![
         b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),

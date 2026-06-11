@@ -26,18 +26,40 @@ fn text_layers_agree() {
     let pdfium_pages = pdfium_backend::render_pdf(&path, 1.0).expect("pdfium render");
     let _ = std::fs::remove_file(&path);
 
-    let hayro_text: String = hayro_pages[0].char_boxes.iter().map(|b| b.ch).collect();
-    let pdfium_text: String = pdfium_pages[0].char_boxes.iter().map(|b| b.ch).collect();
-    assert_eq!(hayro_text, pdfium_text, "extracted strings differ");
+    // Whitespace-normalized: both engines synthesize whitespace the PDF
+    // doesn't contain (pdfium: \r\n + spaces; hayro backend: \n + spaces) and
+    // the exact forms differ legitimately.
+    let normalize = |pages: &[junk_libs_platen::RenderedPage]| {
+        pages[0]
+            .char_boxes
+            .iter()
+            .map(|b| b.ch)
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    assert_eq!(
+        normalize(&hayro_pages),
+        normalize(&pdfium_pages),
+        "extracted strings differ"
+    );
 
-    // Per-character geometry: same left edge within a couple of points, and
+    // Per-character geometry over real glyphs (synthetic whitespace boxes are
+    // engine-specific): same left edge within a couple of points, and
     // overlapping vertical extent. Heights are allowed to differ — hayro uses
     // a nominal ascent/descent cell (SPEC.md §4) — but each pair of boxes
     // must cover the same place on the page.
     for (h, p) in hayro_pages[0]
         .char_boxes
         .iter()
-        .zip(pdfium_pages[0].char_boxes.iter())
+        .filter(|b| !b.ch.is_whitespace())
+        .zip(
+            pdfium_pages[0]
+                .char_boxes
+                .iter()
+                .filter(|b| !b.ch.is_whitespace()),
+        )
     {
         assert_eq!(h.ch, p.ch);
         assert!(

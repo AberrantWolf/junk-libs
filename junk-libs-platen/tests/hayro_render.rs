@@ -127,9 +127,38 @@ fn extracts_text_layer() {
         h.x + h.w,
         e.x
     );
-    // And every box on this single line of text shares a cell height.
+    // And every real glyph box shares a cell height (synthetic whitespace
+    // boxes span gaps and may differ).
     assert!(
-        boxes.iter().all(|b| (b.h - h.h).abs() < 0.5),
+        boxes
+            .iter()
+            .filter(|b| !b.ch.is_whitespace())
+            .all(|b| (b.h - h.h).abs() < 0.5),
         "uneven cell heights"
     );
+}
+
+/// Whitespace synthesis: a newline between baselines, and a space for the
+/// TJ-kerned word gap (the fixture contains no space or newline glyphs).
+#[test]
+fn synthesizes_whitespace() {
+    let bytes = minimal_pdf();
+    let path = std::env::temp_dir().join("junk-libs-platen-ws-test.pdf");
+    std::fs::write(&path, &bytes).expect("write fixture");
+    let pages = junk_libs_platen::render_pdf(&path, 1.0).expect("render pdf");
+    let _ = std::fs::remove_file(&path);
+
+    let text: String = pages[0].char_boxes.iter().map(|b| b.ch).collect();
+    assert!(
+        text.contains("Hello\nbig world"),
+        "expected synthetic newline + space, got {text:?}"
+    );
+    // The synthetic space box spans the inter-word gap so region selection
+    // catches it.
+    let space = pages[0]
+        .char_boxes
+        .iter()
+        .find(|b| b.ch == ' ')
+        .expect("synthetic space box");
+    assert!(space.w > 1.0, "space box should span the gap: w={}", space.w);
 }
