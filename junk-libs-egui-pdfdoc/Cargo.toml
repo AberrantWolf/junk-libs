@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 junk-libs-egui-docview.workspace = true
-junk-libs-pdfium.workspace = true
+junk-libs-platen.workspace = true
 image.workspace = true
 serde.workspace = true
 anyhow.workspace = true

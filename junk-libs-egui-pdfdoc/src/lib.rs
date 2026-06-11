@@ -1,6 +1,6 @@
 //! A batteries-included [`PageModel`] for the `junk-libs-egui-docview` widget,
-//! backed by PDFium (via `junk-libs-pdfium`) for PDFs and the `image` crate for
-//! plain images. Consumers that just want "open a document, draw regions on it"
+//! backed by `junk-libs-platen` for PDFs and the `image` crate for plain
+//! images. Consumers that just want "open a document, draw regions on it"
 //! can use this directly instead of writing their own `PageModel`.
 //!
 //! Nothing here depends on egui beyond the [`PageModel`] trait it implements:
@@ -80,8 +80,7 @@ impl Document {
         let Some(path) = self.source_path.clone() else {
             return Ok(());
         };
-        let pdfium = junk_libs_pdfium::instance()?;
-        let (image, _size) = junk_libs_pdfium::render_page_bitmap(pdfium, &path, index, scale)?;
+        let (image, _size) = junk_libs_platen::render_page_bitmap(&path, index, scale)?;
         if let Some(page) = self.pages.get_mut(index) {
             page.bitmap = image;
         }
@@ -89,8 +88,7 @@ impl Document {
     }
 
     fn open_pdf(path: &Path) -> Result<Vec<Page>> {
-        let pdfium = junk_libs_pdfium::instance()?;
-        let rendered = junk_libs_pdfium::render_pdf(pdfium, path, DEFAULT_RENDER_ZOOM)?;
+        let rendered = junk_libs_platen::render_pdf(path, DEFAULT_RENDER_ZOOM)?;
         Ok(rendered
             .into_iter()
             .map(|r| Page {
