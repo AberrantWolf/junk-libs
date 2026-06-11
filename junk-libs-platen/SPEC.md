@@ -115,17 +115,30 @@ for placement — projected to top-left page points. Details that matter:
 - Extraction is a second interpretation pass per page with its own
   `InterpreterCache` (hayro's `RenderCache` internals are private). Fine for
   now; fold into one pass if the viewer ever notices.
+- **Whitespace synthesis** (added during M2 corpus validation): LaTeX PDFs
+  contain *no space glyphs* — words are positioned by TJ kerning — so the
+  recorder synthesizes a `' '` when the same-line gap between cells exceeds
+  0.18× cell height (`'\n'` for >2× column jumps) and `'\n'` on baseline
+  change, mirroring pdfium's synthetic `\r\n`/spaces. Known tuning gap:
+  figure-label micro-text (individually positioned glyphs in plots) gets
+  over-spaced — pdfium gets the same text under-spaced; both are garbage on
+  plot labels and nothing real consumes them.
 - If upstream text extraction lands (#1049), migrate to it and delete ours.
 
 ## 5. Testing & migration
 
 - **In-crate**: self-built minimal-PDF fixture; asserts raster dimensions,
   actual pixel content, opacity, typed errors, zoom cap, parallel rendering.
-- **A/B harness (M2 gate)**: an `xtask` renders the same documents through
-  both backends, pixel-diffs (perceptual threshold) and, once M1 lands,
-  diffs text layers. Corpus: print-junk imposition inputs/outputs, typeset
-  output, a batch of arXiv PDFs from the expat-junk pipeline. Cutover
-  criterion: no regressions the eye cares about.
+- **A/B harness (M2 gate)**: `examples/ab_compare.rs` (requires both backend
+  features; `--dump <dir>` writes flagged pages as PNGs) renders documents
+  through both engines and reports pixel divergence plus
+  whitespace-normalized text/geometry diffs. **Run 2026-06-11** over
+  imposition sources+outputs, typeset output, and arXiv papers (9 docs, ~45
+  pages): no layout or content divergence. Accepted deltas: antialiasing
+  weight on dense text (5–15% raw pixel diff at the >32/channel metric;
+  visually identical side-by-side), pdfium's `\u{2}` hyphen markers and
+  per-leader-dot spaces (its quirks, not ours), figure-label micro-text
+  spacing (see §4).
 - **Encrypted fixtures**: add a couple of committed password-protected PDFs
   (RC4-128, AES-256) once the viewer grows a password prompt; hayro's
   `PasswordRequired` mapping is in place either way.
@@ -141,20 +154,24 @@ for placement — projected to top-left page points. Details that matter:
   (`tests/ab_backends.rs`, run with `--features backend-pdfium`) confirm
   identical strings, compatible geometry, and <2% pixel divergence vs pdfium
   on the fixture. Corpus-scale validation happens in M2.
-- **M2 — Migration.** Cut over every consumer, then delete the PDFium
-  download/bundle machinery from release packaging and demote
-  `backend-pdfium` to dev-only (or delete it). Call-site inventory:
-  - `junk-libs-egui-pdfdoc` (`open_pdf`, `rerender_page`) — covers the main
-    viewing path of *both* GUI apps;
-  - print-junk: `print-junk-gui/src/handlers/viewer.rs` (render + page_count)
-    and `pdf-import/src/archive.rs` hires probe (`hires` feature);
-  - expat-junk: direct uses are test-side — `src/export.rs` render-back
-    verification of exported PDFs (×2) and `tests/pdfium_wiring.rs` (binary
-    wiring guard, obsolete under platen — delete); plus the
-    `junk-libs-pdfium` git dep in its Cargo.toml.
+- **M2 — Migration.** ✅ Code-complete 2026-06-11; all three repos committed:
+  - junk-libs: `junk-libs-egui-pdfdoc` renders through platen (both GUIs'
+    viewing path).
+  - print-junk: viewer handlers + pdf-import hires probe migrated;
+    `pdfium_render_test` → `platen_render_test`; release.yml/ci.yml/docs
+    stripped of all PDFium locate/copy/sign/rpath machinery; full test
+    suite + clippy green against the local junk-libs.
+  - expat-junk: export.rs render-back tests migrated;
+    `tests/pdfium_wiring.rs` deleted; workflows/docs/THIRD-PARTY.md cleaned;
+    suite green.
+  - Corpus A/B run and accepted (§5).
 
-  Run the A/B harness across the real corpora before each cutover. *Exit:
-  print-junk and expat-junk build, test, and ship with no PDFium anywhere.*
+  **Remaining to land:** push junk-libs, then in print-junk and expat-junk
+  run `cargo update` (print-junk also needs `cargo update -p hayro-jpeg2000`
+  — the `icns` build-dep pins 0.3.4, hayro needs ^0.3.5) to record the new
+  revisions in their lockfiles, and hands-on smoke the two GUIs. After the
+  cutover sticks: delete `backend-pdfium`'s default availability story
+  (keep it dev-only for ab_compare) or remove `junk-libs-pdfium` outright.
 - **M3 — Hardening & upstream.** Fuzz `open`, file upstream PRs (password
   normalization, warning coverage, text-layer findings to #1049), perf pass
   (parallel prefetch in the viewer now that the engine allows it).
