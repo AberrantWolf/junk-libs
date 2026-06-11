@@ -13,13 +13,14 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use hayro::hayro_interpret::InterpreterSettings;
+use hayro::hayro_interpret::{InterpreterCache, InterpreterSettings};
 use hayro::hayro_syntax::page::Page;
 use hayro::hayro_syntax::{DecryptionError, LoadPdfError, Pdf};
 use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::{RenderCache, RenderSettings};
 
-use crate::{CharBox, Error, RenderedPage, Result, cap_scale};
+use crate::hayro_text::extract_char_boxes;
+use crate::{Error, RenderedPage, Result, cap_scale};
 
 /// Open a PDF from bytes, mapping hayro's load errors to ours. The empty
 /// password is what unprotected and owner-password-only documents need.
@@ -84,21 +85,21 @@ fn render_page<'a>(
 pub fn render_pdf(path: &Path, zoom: f32) -> Result<Vec<RenderedPage>> {
     let pdf = open_file(path)?;
     let cache = RenderCache::new();
+    // The text recorder runs its own interpretation pass per page, so it gets
+    // its own interpreter cache (RenderCache's is private to hayro). Fonts
+    // are parsed once per document either way.
+    let text_cache = InterpreterCache::new();
     let settings = interpreter_settings();
-    // TODO(M1): text layer via a recording Device — char_boxes is empty until
-    // then (upstream tracking: LaurenzV/hayro#452, #1049).
-    log::warn!(
-        "hayro backend: text layer extraction not implemented yet; char_boxes will be empty"
-    );
     Ok(pdf
         .pages()
         .iter()
         .map(|page| {
             let (image, size_pts) = render_page(page, &cache, &settings, zoom);
+            let char_boxes = extract_char_boxes(page, &text_cache, &settings);
             RenderedPage {
                 image,
                 size_pts,
-                char_boxes: Vec::<CharBox>::new(),
+                char_boxes,
             }
         })
         .collect())

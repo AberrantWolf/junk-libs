@@ -89,25 +89,33 @@ Decisions baked in:
 | `render_page_bitmap(pdfium, path, idx, scale)` | `render_page_bitmap(path, idx, scale)` | done |
 | `render_page_bitmap_from_bytes(pdfium, bytes, idx, scale)` | same minus `pdfium` | done |
 | `page_count(pdfium, path)` | `page_count(path)` | done |
-| `render_pdf(pdfium, path, zoom)` incl. `char_boxes` | `render_pdf(path, zoom)` — **`char_boxes` empty on hayro until M1** | bitmap done, text layer pending |
+| `render_pdf(pdfium, path, zoom)` incl. `char_boxes` | `render_pdf(path, zoom)` — text layer via recording device on hayro | done |
 | `CharBox` (top-left points, loose bounds) | same shape, same semantics | type done |
 | `quantize_zoom` | carried over verbatim | done |
 | pdfium PDF-creation API (used only by its tests) | not replicated; fixtures are self-built or committed PDFs | n/a |
 
-## 4. Text layer plan (M1 — the blocking work)
+## 4. Text layer (M1 — done 2026-06-11)
 
-The GUI viewer's snap-to-text selection needs per-character boxes. hayro has
-the pieces (glyph→unicode, PR #457) but no public API yet. Plan: a recording
-`hayro_interpret::Device` that ignores paint and captures `draw_glyph` —
-unicode, text-space transform, advance/bbox from font data — projected to
-top-left page points with synthesized loose bounds (full cell from
-ascent/descent, width from advance) to match pdfium's `loose_bounds()`
-tiling. Validate against pdfium's boxes via the A/B harness (identical
-strings, positions within tolerance). If upstream #1049 lands first, use it
-and delete ours.
+Implemented in `src/hayro_text.rs`: a recording `hayro_interpret::Device`
+that ignores paint and captures `draw_glyph` — `Glyph::as_unicode()` for the
+character (ToUnicode → glyph name → uniXXXX fallbacks), CTM × glyph transform
+for placement — projected to top-left page points. Details that matter:
 
-Open question: can loose-bounds synthesis match pdfium closely enough that
-selection blocks tile the same? Decide tolerance empirically.
+- **Loose bounds**: hayro doesn't expose font ascent/descent, so the cell is
+  advance-width wide and −200..+800/1000-upem tall (nominal Latin metrics).
+  The A/B test demands per-char left edges within 2pt of pdfium, right edges
+  within 4pt, and >50% vertical overlap — passing. Cell *heights* differ from
+  pdfium's by design; selection tiling behaves the same.
+- **Invisible text is captured** (hayro fires `draw_glyph` for render mode 3),
+  so OCR'd scans keep their text layer.
+- Fill+stroke modes report a glyph twice; the recorder collapses the repeat.
+- Multi-codepoint mappings (ligatures) split the cell evenly per character.
+- **Type3 glyphs** have no public metrics; their content stream is
+  interpreted into a bounds-collecting device for a tight (not loose) box.
+- Extraction is a second interpretation pass per page with its own
+  `InterpreterCache` (hayro's `RenderCache` internals are private). Fine for
+  now; fold into one pass if the viewer ever notices.
+- If upstream text extraction lands (#1049), migrate to it and delete ours.
 
 ## 5. Testing & migration
 
@@ -129,9 +137,10 @@ selection blocks tile the same? Decide tolerance empirically.
 
 - **M0 — Core render layer.** ✅ Done 2026-06-11 (this crate as built; tests
   green).
-- **M1 — Text layer.** Recording-`Device` char-box extraction (§4); A/B
-  validation against pdfium boxes. *Exit: viewer selection works identically
-  on a hayro render.*
+- **M1 — Text layer.** ✅ Done 2026-06-11 (§4). A/B tests
+  (`tests/ab_backends.rs`, run with `--features backend-pdfium`) confirm
+  identical strings, compatible geometry, and <2% pixel divergence vs pdfium
+  on the fixture. Corpus-scale validation happens in M2.
 - **M2 — Migration.** Cut over `junk-libs-egui-pdfdoc`, print-junk-gui's
   viewer handlers, and pdf-import's hires probe to `junk-libs-platen`; run
   the A/B harness across the real corpora; then delete the PDFium

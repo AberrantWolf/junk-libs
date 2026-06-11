@@ -4,50 +4,8 @@
 
 #![cfg(feature = "backend-hayro")]
 
-/// Build a valid single-xref PDF: one A4 page with a filled black rectangle
-/// and a line of Helvetica text. Offsets are computed, not hard-coded, so the
-/// fixture stays valid if the content changes.
-fn minimal_pdf() -> Vec<u8> {
-    let content = b"0 0 0 rg 100 100 200 200 re f BT /F1 24 Tf 72 720 Td (Hello) Tj ET";
-    let objects: Vec<Vec<u8>> = vec![
-        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R \
-           /Resources << /Font << /F1 5 0 R >> >> >>"
-            .to_vec(),
-        {
-            let mut s = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
-            s.extend_from_slice(content);
-            s.extend_from_slice(b"\nendstream");
-            s
-        },
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
-    ];
-
-    let mut pdf = b"%PDF-1.4\n".to_vec();
-    let mut offsets = Vec::new();
-    for (i, body) in objects.iter().enumerate() {
-        offsets.push(pdf.len());
-        pdf.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
-        pdf.extend_from_slice(body);
-        pdf.extend_from_slice(b"\nendobj\n");
-    }
-    let xref_offset = pdf.len();
-    pdf.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
-    pdf.extend_from_slice(b"0000000000 65535 f \n");
-    for off in offsets {
-        pdf.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
-    }
-    pdf.extend_from_slice(
-        format!(
-            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF",
-            objects.len() + 1,
-            xref_offset
-        )
-        .as_bytes(),
-    );
-    pdf
-}
+mod common;
+use common::minimal_pdf;
 
 #[test]
 fn renders_a_page_from_bytes() {
@@ -136,8 +94,42 @@ fn file_roundtrip_and_page_count() {
     let pages = junk_libs_platen::render_pdf(&path, 1.0).expect("render pdf");
     let _ = std::fs::remove_file(&path);
     assert_eq!(pages.len(), 1);
-    // M1 will flip this assertion: char boxes are documented-empty on hayro
-    // for now. If this starts failing because boxes appeared — delete it and
-    // celebrate.
-    assert!(pages[0].char_boxes.is_empty());
+}
+
+/// Text-layer extraction: same expectations junk-libs-pdfium's test had for
+/// its pdfium-generated fixture — "Hello" at baseline (72, 720) in 24pt
+/// Helvetica, boxes in top-left page points.
+#[test]
+fn extracts_text_layer() {
+    let bytes = minimal_pdf();
+    let path = std::env::temp_dir().join("junk-libs-platen-text-test.pdf");
+    std::fs::write(&path, &bytes).expect("write fixture");
+    let pages = junk_libs_platen::render_pdf(&path, 1.0).expect("render pdf");
+    let _ = std::fs::remove_file(&path);
+
+    let boxes = &pages[0].char_boxes;
+    let text: String = boxes.iter().map(|b| b.ch).collect();
+    assert!(text.contains("Hello"), "extracted text layer was {text:?}");
+
+    // 'H' sits at x≈72pt and, flipped into top-left space, y ≈ 842 − 720 ≈
+    // 122pt down minus the ascent — same windows the pdfium test used.
+    let h = boxes.iter().find(|b| b.ch == 'H').expect("found 'H' box");
+    assert!((55.0..95.0).contains(&h.x), "H.x = {}", h.x);
+    assert!((90.0..150.0).contains(&h.y), "H.y = {}", h.y);
+    assert!(h.w > 0.0 && h.h > 0.0, "degenerate H box {}×{}", h.w, h.h);
+
+    // Loose bounds must tile: 'H' and 'e' are adjacent, so H's right edge
+    // should meet e's left edge (within a point).
+    let e = boxes.iter().find(|b| b.ch == 'e').expect("found 'e' box");
+    assert!(
+        (h.x + h.w - e.x).abs() < 1.0,
+        "H and e don't tile: H ends at {}, e starts at {}",
+        h.x + h.w,
+        e.x
+    );
+    // And every box on this single line of text shares a cell height.
+    assert!(
+        boxes.iter().all(|b| (b.h - h.h).abs() < 0.5),
+        "uneven cell heights"
+    );
 }

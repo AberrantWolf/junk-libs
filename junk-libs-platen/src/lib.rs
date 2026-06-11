@@ -20,9 +20,12 @@
 //! distinguish "needs a password" from "broken file"; it converts into
 //! `anyhow::Error` with `?` like before.
 //!
-//! Current limitation (hayro backend): `char_boxes` comes back empty — the
-//! text layer is the next milestone (recording-`Device` extraction; SPEC.md
-//! §M1). Until then, snap-to-text selection needs the pdfium backend.
+//! Text layer: both backends fill `char_boxes`. pdfium reports its own
+//! `loose_bounds`; the hayro backend records glyphs through a custom
+//! interpreter device (`hayro_text`), synthesizing the loose character cell
+//! from the advance width and a nominal ascent/descent. The A/B test suite
+//! (`tests/ab_backends.rs`, both features enabled) checks the two engines
+//! agree on strings, geometry, and pixels.
 
 #[cfg(not(any(feature = "backend-hayro", feature = "backend-pdfium")))]
 compile_error!(
@@ -31,6 +34,8 @@ compile_error!(
 
 #[cfg(feature = "backend-hayro")]
 pub mod hayro_backend;
+#[cfg(feature = "backend-hayro")]
+mod hayro_text;
 #[cfg(feature = "backend-pdfium")]
 pub mod pdfium_backend;
 
@@ -94,8 +99,7 @@ pub struct RenderedPage {
     /// Native page size in PDF points (origin-independent, used for overlays).
     pub size_pts: (f32, f32),
     /// Per-character boxes for snap-to-text selection and the native text
-    /// layer. Empty for pages (or documents) with no extractable text — and,
-    /// for now, always empty on the hayro backend (see module docs).
+    /// layer. Empty for pages (or documents) with no extractable text.
     pub char_boxes: Vec<CharBox>,
 }
 
