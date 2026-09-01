@@ -33,3 +33,4 @@ sha1 = "0.10"
 md5 = "0.7"
 chd = "0.3"
 log = { version = "0.4", features = ["std"] }
+lopdf = { version = "0.40", default-features = false }

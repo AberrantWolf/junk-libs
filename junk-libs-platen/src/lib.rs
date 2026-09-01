@@ -36,8 +36,10 @@ compile_error!(
 pub mod hayro_backend;
 #[cfg(feature = "backend-hayro")]
 mod hayro_text;
+pub mod metadata;
 #[cfg(feature = "backend-pdfium")]
 pub mod pdfium_backend;
+pub use metadata::{PdfMetadata, PdfOutlineItem};
 
 #[cfg(feature = "backend-hayro")]
 use hayro_backend as default_backend;
@@ -136,11 +138,12 @@ pub fn page_count(path: &Path) -> Result<usize> {
     default_backend::page_count(path)
 }
 
-/// Quantize a zoom fraction to a discrete percentage, for render-cache keys.
-/// Steps: every 25% from 25–100, every 50% from 100–400.
-pub fn quantize_zoom(zoom: f32) -> u32 {
-    let percent = (zoom * 100.0).round() as i32;
-    let clamped = percent.clamp(25, 400);
+/// Quantize a render scale (pixels per PDF point) for cache keys. This range is
+/// deliberately identical to `junk-libs-egui-docview`'s render requests so high
+/// density 4.5–6× rasters never collide under a 4× cache key.
+pub fn quantize_render_scale(scale: f32) -> u32 {
+    let percent = (scale * 100.0).round() as i32;
+    let clamped = percent.clamp(25, 600);
     if clamped <= 100 {
         ((clamped + 12) / 25 * 25) as u32
     } else {
@@ -167,13 +170,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn quantize_zoom_steps() {
-        assert_eq!(quantize_zoom(0.1), 25); // clamped low
-        assert_eq!(quantize_zoom(0.30), 25);
-        assert_eq!(quantize_zoom(0.40), 50);
-        assert_eq!(quantize_zoom(1.0), 100);
-        assert_eq!(quantize_zoom(1.3), 150);
-        assert_eq!(quantize_zoom(9.0), 400); // clamped high
+    fn quantize_render_scale_steps() {
+        assert_eq!(quantize_render_scale(0.1), 25); // clamped low
+        assert_eq!(quantize_render_scale(0.30), 25);
+        assert_eq!(quantize_render_scale(0.40), 50);
+        assert_eq!(quantize_render_scale(1.0), 100);
+        assert_eq!(quantize_render_scale(1.3), 150);
+        assert_eq!(quantize_render_scale(4.5), 450);
+        assert_eq!(quantize_render_scale(6.0), 600);
+        assert_eq!(quantize_render_scale(9.0), 600); // clamped high
     }
 
     #[cfg(feature = "backend-hayro")]
