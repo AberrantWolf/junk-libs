@@ -2,7 +2,10 @@
 //! Rendering remains backend-specific; outlines and page labels are ordinary PDF
 //! structures and are parsed once here for every backend.
 
-use std::path::Path;
+use std::{
+    collections::{HashMap, VecDeque},
+    path::Path,
+};
 
 use lopdf::{Dictionary, Document, Object};
 
@@ -53,6 +56,7 @@ fn map_load_error(error: lopdf::Error) -> Error {
 fn from_document(document: &Document) -> Result<PdfMetadata> {
     let page_count = document.get_pages().len();
     let mut warnings = Vec::new();
+    let mut outline_positions = read_outline_positions(document, &mut warnings);
     let outline = match document.get_toc() {
         Ok(toc) => {
             warnings.extend(
@@ -67,11 +71,18 @@ fn from_document(document: &Document) -> Result<PdfMetadata> {
                         .page
                         .checked_sub(1)
                         .filter(|page| *page < page_count)
-                        .map(|page_index| PdfOutlineItem {
-                            level: entry.level,
-                            title: entry.title,
-                            page_index,
-                            top_fraction: None,
+                        .map(|page_index| {
+                            let key = (entry.title.clone(), page_index);
+                            let top_fraction = outline_positions
+                                .get_mut(&key)
+                                .and_then(VecDeque::pop_front)
+                                .flatten();
+                            PdfOutlineItem {
+                                level: entry.level,
+                                title: entry.title,
+                                page_index,
+                                top_fraction,
+                            }
                         })
                 })
                 .collect()
@@ -89,6 +100,150 @@ fn from_document(document: &Document) -> Result<PdfMetadata> {
         page_labels,
         warnings,
     })
+}
+
+type OutlinePositions = HashMap<(String, usize), VecDeque<Option<f32>>>;
+
+#[derive(Clone, Copy)]
+struct PageTarget {
+    index: usize,
+    vertical_extent: Option<(f32, f32)>,
+}
+
+type PageTargets = HashMap<lopdf::ObjectId, PageTarget>;
+
+/// Lopdf's convenient `get_toc` deliberately flattens destinations to pages.
+/// Walk the same outline tree once to retain `/XYZ` and `/FitH` vertical
+/// positions, then pair them by title/page/occurrence with the decoded TOC.
+fn read_outline_positions(document: &Document, warnings: &mut Vec<String>) -> OutlinePositions {
+    let pages: HashMap<_, _> = document
+        .get_pages()
+        .into_values()
+        .enumerate()
+        .map(|(index, id)| {
+            (
+                id,
+                PageTarget {
+                    index,
+                    vertical_extent: page_vertical_extent(document, id),
+                },
+            )
+        })
+        .collect();
+    let first = document
+        .catalog()
+        .ok()
+        .and_then(|catalog| catalog.get(b"Outlines").ok())
+        .and_then(|object| resolve_dictionary(document, object).ok())
+        .and_then(|outlines| outlines.get(b"First").ok().cloned());
+    let mut positions = HashMap::new();
+    if let Some(first) = first
+        && let Err(error) =
+            collect_outline_positions(document, first, &pages, &mut positions, warnings)
+    {
+        warnings.push(format!("outline positions could not be read: {error}"));
+    }
+    positions
+}
+
+fn collect_outline_positions(
+    document: &Document,
+    mut node: Object,
+    pages: &PageTargets,
+    positions: &mut OutlinePositions,
+    warnings: &mut Vec<String>,
+) -> lopdf::Result<()> {
+    loop {
+        let dictionary = resolve_dictionary(document, &node)?;
+        let title = dictionary
+            .get(b"Title")
+            .ok()
+            .and_then(|object| lopdf::decode_text_string(object).ok());
+        let destination = dictionary
+            .get(b"Dest")
+            .ok()
+            .cloned()
+            .or_else(|| {
+                dictionary
+                    .get(b"A")
+                    .ok()
+                    .and_then(|action| resolve_dictionary(document, action).ok())
+                    .and_then(|action| {
+                        let action_kind = action.get(b"S").ok()?.as_name().ok()?;
+                        if action_kind == b"GoToR" {
+                            warnings.push(
+                                "remote outline destination ignored; only local PDF bookmarks are supported"
+                                    .into(),
+                            );
+                            None
+                        } else if action_kind == b"GoTo" {
+                            action.get(b"D").ok().cloned()
+                        } else {
+                            None
+                        }
+                    })
+            });
+        if let (Some(title), Some(destination)) = (title, destination)
+            && let Some((page_index, top_fraction)) =
+                local_destination(document, &destination, pages)
+        {
+            positions
+                .entry((title, page_index))
+                .or_default()
+                .push_back(top_fraction);
+        }
+
+        if let Ok(first) = dictionary.get(b"First") {
+            collect_outline_positions(document, first.clone(), pages, positions, warnings)?;
+        }
+        let Ok(next) = dictionary.get(b"Next") else {
+            break;
+        };
+        node = next.clone();
+    }
+    Ok(())
+}
+
+fn local_destination(
+    document: &Document,
+    destination: &Object,
+    pages: &PageTargets,
+) -> Option<(usize, Option<f32>)> {
+    let destination = match destination {
+        Object::Reference(id) => document.get_object(*id).ok()?,
+        object => object,
+    };
+    let array = destination.as_array().ok()?;
+    let page_id = array.first()?.as_reference().ok()?;
+    let page = pages.get(&page_id)?;
+    let mode = array.get(1)?.as_name().ok()?;
+    let top = match mode {
+        b"XYZ" => array.get(3).and_then(|object| object.as_float().ok()),
+        b"FitH" | b"FitBH" => array.get(2).and_then(|object| object.as_float().ok()),
+        _ => None,
+    };
+    let top_fraction = top.and_then(|top| {
+        let (bottom, height) = page.vertical_extent?;
+        (height > 0.0).then(|| (1.0 - (top - bottom) / height).clamp(0.0, 1.0))
+    });
+    Some((page.index, top_fraction))
+}
+
+fn page_vertical_extent(document: &Document, mut id: lopdf::ObjectId) -> Option<(f32, f32)> {
+    loop {
+        let page = document.get_dictionary(id).ok()?;
+        if let Ok(media_box) = page.get(b"MediaBox") {
+            let media_box = match media_box {
+                Object::Reference(id) => document.get_object(*id).ok()?,
+                object => object,
+            };
+            let values = media_box.as_array().ok()?;
+            let bottom = values.get(1)?.as_float().ok()?;
+            let top = values.get(3)?.as_float().ok()?;
+            return Some((bottom.min(top), (top - bottom).abs()));
+        }
+        id = page.get(b"Parent").ok()?.as_reference().ok()?;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -277,7 +432,13 @@ mod tests {
         let item_id = document.add_object(dictionary! {
             "Title" => Object::string_literal("Chapter one"),
             "Parent" => outlines_id,
-            "Dest" => vec![page_id.into(), Object::Name(b"Fit".to_vec())],
+            "Dest" => vec![
+                page_id.into(),
+                Object::Name(b"XYZ".to_vec()),
+                Object::Null,
+                300.into(),
+                Object::Null,
+            ],
         });
         document.objects.insert(
             outlines_id,
@@ -311,6 +472,7 @@ mod tests {
         assert_eq!(metadata.page_count, 1);
         assert_eq!(metadata.outline[0].title, "Chapter one");
         assert_eq!(metadata.outline[0].page_index, 0);
+        assert_eq!(metadata.outline[0].top_fraction, Some(0.25));
         assert_eq!(metadata.page_labels, ["front-i"]);
     }
 }
