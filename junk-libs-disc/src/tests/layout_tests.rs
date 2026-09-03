@@ -147,6 +147,55 @@ FILE "t3.bin" BINARY
     );
 }
 
+// Multi-FILE CUE where later tracks have an INDEX 00 pregap inside their own
+// BIN (INDEX 01 > 00:00:00). The pregap sectors belong on the end of the
+// previous track's length and must NOT be dropped.
+//
+// Fixture: real 8cm sample disc "1slWHocW5_...". Expected MusicBrainz input
+// derived from the bundled `mbdiscid_full.log`:
+//     1 3 61197 187 20335 39190
+// BIN sizes: 19946 / 19094 / 22007 sectors.
+// INDEX 01 positions within their BINs: 37, 239, 0.
+#[test]
+fn compute_cue_layout_multi_file_pregap_in_later_file() {
+    let cue = r#"FILE "t1.bin" BINARY
+  TRACK 01 AUDIO
+    INDEX 00 00:00:00
+    INDEX 01 00:00:37
+FILE "t2.bin" BINARY
+  TRACK 02 AUDIO
+    INDEX 00 00:00:00
+    INDEX 01 00:03:14
+FILE "t3.bin" BINARY
+  TRACK 03 AUDIO
+    INDEX 01 00:00:00
+"#;
+    let sheet = parse_cue(cue).unwrap();
+    let layout = compute_cue_layout(&sheet, |name| {
+        let sectors: u64 = match name {
+            "t1.bin" => 19946,
+            "t2.bin" => 19094,
+            "t3.bin" => 22007,
+            _ => return Err(junk_libs_core::AnalysisError::invalid_format("unknown BIN")),
+        };
+        Ok(sectors * RAW_SECTOR_SIZE)
+    })
+    .unwrap();
+
+    assert_eq!(
+        layout.iter().map(|t| t.absolute_offset).collect::<Vec<_>>(),
+        vec![187, 20335, 39190]
+    );
+    assert_eq!(
+        layout.iter().map(|t| t.length_sectors).collect::<Vec<_>>(),
+        vec![20148, 18855, 22007]
+    );
+    assert_eq!(
+        layout.last().unwrap().absolute_offset + layout.last().unwrap().length_sectors,
+        61197
+    );
+}
+
 // ---------------------------------------------------------------------------
 // compute_cue_layout — error paths
 // ---------------------------------------------------------------------------
@@ -186,6 +235,27 @@ fn compute_cue_layout_missing_index01_errors() {
     let sheet = parse_cue(cue).unwrap();
     let res = compute_cue_layout(&sheet, |_| Ok(100 * RAW_SECTOR_SIZE));
     assert!(res.is_err());
+}
+
+#[test]
+fn compute_cue_layout_uses_declared_cooked_frame_size() {
+    let cue = "FILE \"disc.iso\" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n";
+    let sheet = parse_cue(cue).unwrap();
+    let layout = compute_cue_layout(&sheet, |_| Ok(100 * 2048)).unwrap();
+    assert_eq!(layout[0].absolute_offset, LEAD_IN_FRAMES);
+    assert_eq!(layout[0].length_sectors, 100);
+}
+
+#[test]
+fn compute_cue_layout_rejects_ambiguous_mixed_frame_sizes_in_one_file() {
+    let cue = r#"FILE "disc.bin" BINARY
+  TRACK 01 MODE1/2048
+    INDEX 01 00:00:00
+  TRACK 02 AUDIO
+    INDEX 01 00:02:00
+"#;
+    let sheet = parse_cue(cue).unwrap();
+    assert!(compute_cue_layout(&sheet, |_| Ok(300 * 2352)).is_err());
 }
 
 // ---------------------------------------------------------------------------

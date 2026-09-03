@@ -18,6 +18,7 @@ pub mod format;
 pub mod iso9660;
 pub mod layout;
 pub mod pcm;
+pub mod redumper;
 pub mod sector;
 
 #[cfg(test)]
@@ -26,13 +27,18 @@ mod layout_tests;
 
 pub use chd::{compute_chd_layout, read_chd_layout, read_chd_raw_sector};
 pub use cue::{
-    CueCompatReport, CueFile, CueIndex, CueSheet, CueTrack, check_cue_compat, compute_cue_layout,
-    convert_cue_to_standard, read_cue_layout,
+    CueCompatReport, CueFile, CueIndex, CueResolvedLayout, CueSheet, CueSourceFile, CueTrack,
+    check_cue_compat, checked_sector_size_for_mode, compute_cue_layout,
+    compute_cue_resolved_layout, convert_cue_to_standard, read_cue_layout, resolve_local_file,
 };
 pub use format::{DiscFormat, detect_disc_format};
 pub use iso9660::{DirectoryRecord, PrimaryVolumeDescriptor, find_file_in_root, read_pvd};
 pub use layout::{LEAD_IN_FRAMES, TrackKind, TrackLayout, classify_mode};
 pub use pcm::{PCM_SAMPLES_PER_SECTOR, PcmSector, TrackPcmReader, sector_to_samples};
+pub use redumper::{
+    CdRawStructure, CdText, CdTextBlock, CdTextTrack, DriveInfo, RedumperLog, Ripper, Sidecars,
+    find_sidecars, parse_cdtext, parse_log, sniff_ripper, validate_current_cd_raw,
+};
 pub use sector::{
     CD_SYNC_PATTERN, CHD_MAGIC, ISO_SECTOR_SIZE, MODE1_DATA_OFFSET, MODE2_FORM1_DATA_OFFSET,
     PVD_SECTOR, RAW_SECTOR_SIZE, read_sector_data,

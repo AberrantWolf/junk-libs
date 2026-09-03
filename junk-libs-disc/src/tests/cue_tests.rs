@@ -166,6 +166,50 @@ fn test_parse_cue_cdrwin_track_before_datafile() {
     assert_eq!(sheet.files[0].tracks[0].mode, "MODE1_RAW");
 }
 
+#[test]
+fn test_parse_cue_accepts_tab_separated_directives() {
+    let sheet =
+        parse_cue("FILE\t\"a.bin\"\tBINARY\nTRACK\t01\tMODE1/2352\nINDEX\t01\t00:00:00\n").unwrap();
+    assert_eq!(sheet.files[0].filename, "a.bin");
+    assert_eq!(sheet.files[0].tracks[0].number, 1);
+}
+
+#[test]
+fn test_parse_cue_rejects_malformed_structural_directives() {
+    for cue in [
+        "INDEX 01 00:00:00\nFILE \"game.bin\" BINARY\n",
+        "FILE \"game.bin\" BINARY\nTRACK XX MODE1/2352\n",
+        "FILE \"game.bin\" BINARY\nTRACK 00 MODE1/2352\n",
+        "FILE \"\" BINARY\nTRACK 01 MODE1/2352\n",
+        "FILE \"game.bin\" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:60:00\n",
+        "FILE \"game.bin\" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:75\n",
+    ] {
+        assert!(parse_cue(cue).is_err(), "accepted malformed CUE: {cue}");
+    }
+}
+
+#[test]
+fn checked_sector_sizes_match_cd_track_representations() {
+    assert_eq!(checked_sector_size_for_mode("MODE1/2048").unwrap(), 2048);
+    assert_eq!(checked_sector_size_for_mode("MODE2/2324").unwrap(), 2324);
+    assert_eq!(checked_sector_size_for_mode("MODE2/2336").unwrap(), 2336);
+    assert_eq!(checked_sector_size_for_mode("MODE2/2352").unwrap(), 2352);
+    assert_eq!(checked_sector_size_for_mode("AUDIO").unwrap(), 2352);
+    assert!(checked_sector_size_for_mode("MODE2/abc").is_err());
+    assert!(checked_sector_size_for_mode("MODE1/2324").is_err());
+}
+
+#[test]
+fn resolve_local_file_rejects_directory_escape() {
+    let base = Path::new("/archive/game");
+    assert!(resolve_local_file(base, "../other.bin").is_err());
+    assert!(resolve_local_file(base, "/tmp/other.bin").is_err());
+    assert_eq!(
+        resolve_local_file(base, "tracks/track01.bin").unwrap(),
+        base.join("tracks/track01.bin")
+    );
+}
+
 // -- CUE compatibility detection tests --
 
 #[test]

@@ -77,3 +77,22 @@ fn test_parse_directory_record_valid_dot_entry() {
     assert!(rec.is_some());
     assert_eq!(rec.unwrap().file_identifier, ".");
 }
+
+#[test]
+fn test_directory_record_rejects_length_and_endian_disagreement() {
+    let mut too_long = vec![0u8; 34];
+    too_long[0] = 40;
+    too_long[32] = 1;
+    assert!(parse_directory_record(&too_long).is_none());
+
+    let mut endian_mismatch = crate::test_helpers::make_dir_record("FILE", 19, 4);
+    endian_mismatch[9] ^= 1;
+    assert!(parse_directory_record(&endian_mismatch).is_none());
+}
+
+#[test]
+fn test_pvd_rejects_endian_disagreement() {
+    let mut pvd = crate::test_helpers::make_pvd_sector("PLAYSTATION");
+    pvd[87] ^= 1;
+    assert!(parse_pvd_data(&pvd).is_err());
+}

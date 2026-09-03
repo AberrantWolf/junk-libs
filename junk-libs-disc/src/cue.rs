@@ -1,11 +1,10 @@
 //! CUE sheet parsing and compatibility detection.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use junk_libs_core::AnalysisError;
 
 use crate::layout::{LEAD_IN_FRAMES, TrackLayout, classify_mode};
-use crate::sector::RAW_SECTOR_SIZE;
 
 /// A parsed CUE sheet.
 #[derive(Debug, Clone)]
@@ -48,6 +47,22 @@ impl CueIndex {
     }
 }
 
+/// Resolve a CUE `FILE` reference without allowing an absolute path or a
+/// parent traversal to escape the CUE directory.
+pub fn resolve_local_file(base: &Path, filename: &str) -> Result<PathBuf, AnalysisError> {
+    let relative = Path::new(filename);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+    {
+        return Err(AnalysisError::invalid_format(format!(
+            "CUE FILE reference escapes its directory: {filename}"
+        )));
+    }
+    Ok(base.join(relative))
+}
+
 /// Parse a CUE sheet from its text content.
 ///
 /// Supports both standard CUE format (`FILE`/`TRACK <num> <mode>`) and
@@ -69,26 +84,17 @@ pub fn parse_cue(content: &str) -> Result<CueSheet, AnalysisError> {
             continue;
         }
 
-        let upper = line.to_uppercase();
+        let (token, rest) = split_first_token(line);
+        let keyword = token.to_ascii_uppercase();
 
-        if upper.starts_with("FILE ")
-            || upper.starts_with("DATAFILE ")
-            || upper.starts_with("AUDIOFILE ")
-        {
+        if matches!(keyword.as_str(), "FILE" | "DATAFILE" | "AUDIOFILE") {
             // Save previous file entry
             if let Some(f) = current_file.take() {
                 files.push(f);
             }
 
-            let is_datafile = upper.starts_with("DATAFILE ");
-            let skip_len = if is_datafile {
-                9
-            } else if upper.starts_with("AUDIOFILE ") {
-                10
-            } else {
-                5
-            };
-            let (filename, file_type) = parse_cue_file_line_at(line, skip_len)?;
+            let is_datafile = keyword == "DATAFILE";
+            let (filename, file_type) = parse_cue_file_remainder(rest)?;
             let mut new_file = CueFile {
                 filename,
                 file_type: if is_datafile {
@@ -103,9 +109,12 @@ pub fn parse_cue(content: &str) -> Result<CueSheet, AnalysisError> {
                 new_file.tracks.append(&mut pending_tracks);
             }
             current_file = Some(new_file);
-        } else if upper.starts_with("TRACK ") {
-            auto_track_number += 1;
-            let (number, mode) = parse_cue_track_line(line, auto_track_number)?;
+        } else if keyword == "TRACK" {
+            let fallback_number = auto_track_number.checked_add(1).ok_or_else(|| {
+                AnalysisError::invalid_format("CUE contains more than 255 tracks")
+            })?;
+            let (number, mode) = parse_cue_track_line(line, fallback_number)?;
+            auto_track_number = number;
             let track = CueTrack {
                 number,
                 mode,
@@ -117,16 +126,19 @@ pub fn parse_cue(content: &str) -> Result<CueSheet, AnalysisError> {
                 // CDRWin: TRACK appears before its DATAFILE/FILE
                 pending_tracks.push(track);
             }
-        } else if upper.starts_with("INDEX ") {
+        } else if keyword == "INDEX" {
             // Attach to last track in current_file or pending_tracks
-            if let Ok(index) = parse_cue_index_line(line) {
-                if let Some(ref mut f) = current_file
-                    && let Some(ref mut track) = f.tracks.last_mut()
-                {
-                    track.indexes.push(index);
-                } else if let Some(ref mut track) = pending_tracks.last_mut() {
-                    track.indexes.push(index);
-                }
+            let index = parse_cue_index_line(line)?;
+            if let Some(ref mut f) = current_file
+                && let Some(ref mut track) = f.tracks.last_mut()
+            {
+                track.indexes.push(index);
+            } else if let Some(ref mut track) = pending_tracks.last_mut() {
+                track.indexes.push(index);
+            } else {
+                return Err(AnalysisError::invalid_format(format!(
+                    "INDEX directive with no current TRACK: {line}"
+                )));
             }
         }
         // Ignore PREGAP, POSTGAP, REM, CD_ROM_XA, NO COPY, etc.
@@ -146,13 +158,22 @@ pub fn parse_cue(content: &str) -> Result<CueSheet, AnalysisError> {
     Ok(CueSheet { files })
 }
 
+fn split_first_token(line: &str) -> (&str, &str) {
+    match line.find(char::is_whitespace) {
+        Some(idx) => (&line[..idx], line[idx..].trim_start()),
+        None => (line, ""),
+    }
+}
+
 /// Parse a FILE/DATAFILE line: `FILE "filename.bin" BINARY` or `DATAFILE "filename.bin" 01:32:21`
 ///
 /// `skip_len` is the number of bytes to skip for the keyword prefix
 /// (5 for "FILE ", 9 for "DATAFILE ").
 fn parse_cue_file_line_at(line: &str, skip_len: usize) -> Result<(String, String), AnalysisError> {
-    let rest = &line[skip_len..];
+    parse_cue_file_remainder(line.get(skip_len..).unwrap_or("").trim_start())
+}
 
+fn parse_cue_file_remainder(rest: &str) -> Result<(String, String), AnalysisError> {
     let (filename, remainder) = if let Some(after_quote) = rest.strip_prefix('"') {
         // Quoted filename
         let end_quote = after_quote
@@ -169,6 +190,12 @@ fn parse_cue_file_line_at(line: &str, skip_len: usize) -> Result<(String, String
         (filename, remainder)
     };
 
+    if filename.is_empty() {
+        return Err(AnalysisError::invalid_format(
+            "CUE FILE directive has an empty filename",
+        ));
+    }
+
     Ok((filename, remainder))
 }
 
@@ -182,11 +209,17 @@ fn parse_cue_track_line(line: &str, fallback_number: u8) -> Result<(u8, String),
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() >= 3 {
         // Standard: TRACK <number> <mode>
-        if let Ok(number) = parts[1].parse::<u8>() {
-            return Ok((number, parts[2].to_string()));
+        let number = parts[1].parse::<u8>().map_err(|_| {
+            AnalysisError::invalid_format(format!("Invalid track number in CUE: {line}"))
+        })?;
+        if !(1..=99).contains(&number) {
+            return Err(AnalysisError::invalid_format(format!(
+                "CUE track number is outside 1..99: {line}"
+            )));
         }
+        return Ok((number, parts[2].to_string()));
     }
-    if parts.len() >= 2 {
+    if parts.len() == 2 {
         // CDRWin: TRACK <mode> (no number)
         return Ok((fallback_number, parts[1].to_string()));
     }
@@ -197,29 +230,18 @@ fn parse_cue_track_line(line: &str, fallback_number: u8) -> Result<(u8, String),
 fn parse_cue_index_line(line: &str) -> Result<CueIndex, AnalysisError> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() < 3 {
-        return Err(AnalysisError::invalid_format("Invalid INDEX line in CUE"));
+        return Err(AnalysisError::invalid_format(format!(
+            "Invalid INDEX line in CUE: {line}"
+        )));
     }
 
     let number: u8 = parts[1]
         .parse()
         .map_err(|_| AnalysisError::invalid_format("Invalid index number in CUE"))?;
 
-    let msf_parts: Vec<&str> = parts[2].split(':').collect();
-    if msf_parts.len() != 3 {
-        return Err(AnalysisError::invalid_format(
-            "Invalid MSF timestamp in CUE INDEX",
-        ));
-    }
-
-    let minutes: u32 = msf_parts[0]
-        .parse()
-        .map_err(|_| AnalysisError::invalid_format("Invalid minutes in CUE INDEX"))?;
-    let seconds: u32 = msf_parts[1]
-        .parse()
-        .map_err(|_| AnalysisError::invalid_format("Invalid seconds in CUE INDEX"))?;
-    let frames: u32 = msf_parts[2]
-        .parse()
-        .map_err(|_| AnalysisError::invalid_format("Invalid frames in CUE INDEX"))?;
+    let (minutes, seconds, frames) = parse_msf(parts[2]).map_err(|_| {
+        AnalysisError::invalid_format(format!("Invalid MSF timestamp in CUE INDEX: {line}"))
+    })?;
 
     Ok(CueIndex {
         number,
@@ -227,6 +249,30 @@ fn parse_cue_index_line(line: &str) -> Result<CueIndex, AnalysisError> {
         seconds,
         frames,
     })
+}
+
+fn parse_msf(s: &str) -> Result<(u32, u32, u32), AnalysisError> {
+    let parts: Vec<&str> = s.split(':').collect();
+    if parts.len() != 3 {
+        return Err(AnalysisError::invalid_format(format!(
+            "Invalid MSF timestamp: {s}"
+        )));
+    }
+    let minutes = parts[0]
+        .parse::<u32>()
+        .map_err(|_| AnalysisError::invalid_format(format!("Invalid minutes in MSF: {s}")))?;
+    let seconds = parts[1]
+        .parse::<u32>()
+        .map_err(|_| AnalysisError::invalid_format(format!("Invalid seconds in MSF: {s}")))?;
+    let frames = parts[2]
+        .parse::<u32>()
+        .map_err(|_| AnalysisError::invalid_format(format!("Invalid frames in MSF: {s}")))?;
+    if seconds >= 60 || frames >= 75 {
+        return Err(AnalysisError::invalid_format(format!(
+            "MSF fields are out of range (seconds 0..59, frames 0..74): {s}"
+        )));
+    }
+    Ok((minutes, seconds, frames))
 }
 
 // -- CDRWin compatibility detection and conversion --
@@ -423,39 +469,24 @@ fn convert_track_mode(mode: &str) -> Option<&'static str> {
     }
 }
 
-/// Sector size in bytes for a track mode (CDRWin or standard).
-fn sector_size_for_mode(mode: &str) -> u16 {
-    match mode.to_uppercase().as_str() {
-        "MODE1/2048" | "MODE2_FORM1" => 2048,
-        "MODE1/2352" | "MODE1_RAW" => 2352,
-        "MODE2/2048" => 2048,
-        "MODE2/2324" | "MODE2_FORM2" => 2324,
-        "MODE2/2336" | "MODE2" | "MODE2_FORM_MIX" => 2336,
-        "MODE2/2352" | "MODE2_RAW" => 2352,
-        "AUDIO" => 2352,
-        // Default to raw sector size for unknown modes
-        _ => 2352,
+/// Resolve a supported CUE/CDRWin track mode to its stored bytes per frame.
+/// Byte-span code must use this fail-closed mapping.
+pub fn checked_sector_size_for_mode(mode: &str) -> Result<u64, AnalysisError> {
+    match mode.trim().to_ascii_uppercase().as_str() {
+        "MODE1" | "MODE1/2048" | "MODE2_FORM1" | "MODE2/2048" => Ok(2048),
+        "MODE2_FORM2" | "MODE2/2324" => Ok(2324),
+        "MODE2" | "MODE2/2336" | "MODE2_FORM_MIX" | "CDI/2336" => Ok(2336),
+        "MODE1_RAW" | "MODE1/2352" | "MODE2_RAW" | "MODE2/2352" | "CDI/2352" | "AUDIO" => Ok(2352),
+        _ => Err(AnalysisError::unsupported(format!(
+            "unsupported CUE track mode: {mode}"
+        ))),
     }
 }
 
 /// Convert an MSF timestamp string "MM:SS:FF" to a sector count.
 fn msf_to_sectors(msf: &str) -> Result<u64, AnalysisError> {
-    let parts: Vec<&str> = msf.split(':').collect();
-    if parts.len() != 3 {
-        return Err(AnalysisError::invalid_format(
-            "Invalid MSF timestamp in DATAFILE",
-        ));
-    }
-    let minutes: u64 = parts[0]
-        .parse()
-        .map_err(|_| AnalysisError::invalid_format("Invalid minutes in DATAFILE MSF"))?;
-    let seconds: u64 = parts[1]
-        .parse()
-        .map_err(|_| AnalysisError::invalid_format("Invalid seconds in DATAFILE MSF"))?;
-    let frames: u64 = parts[2]
-        .parse()
-        .map_err(|_| AnalysisError::invalid_format("Invalid frames in DATAFILE MSF"))?;
-    Ok((minutes * 60 + seconds) * 75 + frames)
+    let (minutes, seconds, frames) = parse_msf(msf)?;
+    Ok((u64::from(minutes) * 60 + u64::from(seconds)) * 75 + u64::from(frames))
 }
 
 /// Convert a sector offset back to MSF "MM:SS:FF" format.
@@ -543,7 +574,7 @@ pub fn convert_cue_to_standard(content: &str, _cue_dir: &Path) -> Result<String,
                 // ensure the first pending track gets the right INDEX
                 if cumulative_byte_offset > 0 && !pending_tracks.is_empty() {
                     let mode = &pending_tracks[0].1;
-                    let sector_sz = sector_size_for_mode(mode) as u64;
+                    let sector_sz = checked_sector_size_for_mode(mode)?;
                     let sector_offset = cumulative_byte_offset / sector_sz;
                     let msf = sectors_to_msf(sector_offset);
                     // Only add INDEX if the track doesn't already have one
@@ -567,27 +598,33 @@ pub fn convert_cue_to_standard(content: &str, _cue_dir: &Path) -> Result<String,
             }
 
             // Advance cumulative offset if MSF length was specified
-            if let Some(ref msf) = msf_length {
-                if let Ok(sectors) = msf_to_sectors(msf) {
-                    // Determine sector size from the most recent track mode
-                    let mode = pending_tracks
-                        .last()
-                        .map(|(_, m, _)| m.as_str())
-                        .or_else(|| {
-                            // Look at the last TRACK line we emitted
-                            output_lines.iter().rev().find_map(|l| {
-                                let lt = l.trim();
-                                if lt.starts_with("TRACK ") {
-                                    lt.split_whitespace().nth(2)
-                                } else {
-                                    None
-                                }
-                            })
+            if let Some(ref msf) = msf_length
+                && let Ok(sectors) = msf_to_sectors(msf)
+            {
+                // Determine sector size from the most recent track mode
+                let mode = pending_tracks
+                    .last()
+                    .map(|(_, m, _)| m.as_str())
+                    .or_else(|| {
+                        // Look at the last TRACK line we emitted
+                        output_lines.iter().rev().find_map(|l| {
+                            let lt = l.trim();
+                            if lt.starts_with("TRACK ") {
+                                lt.split_whitespace().nth(2)
+                            } else {
+                                None
+                            }
                         })
-                        .unwrap_or("MODE2/2352");
-                    let sector_sz = sector_size_for_mode(mode) as u64;
-                    cumulative_byte_offset += sectors * sector_sz;
-                }
+                    })
+                    .unwrap_or("MODE2/2352");
+                let sector_sz = checked_sector_size_for_mode(mode)?;
+                cumulative_byte_offset = cumulative_byte_offset
+                    .checked_add(sectors.checked_mul(sector_sz).ok_or_else(|| {
+                        AnalysisError::invalid_format("CDRWin DATAFILE byte length overflow")
+                    })?)
+                    .ok_or_else(|| {
+                        AnalysisError::invalid_format("CDRWin DATAFILE byte offset overflow")
+                    })?;
             }
 
             last_datafile = Some(filename);
@@ -737,28 +774,105 @@ pub fn compute_cue_layout(
     sheet: &CueSheet,
     bin_size: impl Fn(&str) -> Result<u64, AnalysisError>,
 ) -> Result<Vec<TrackLayout>, AnalysisError> {
+    Ok(compute_cue_resolved_layout(sheet, bin_size)?.tracks)
+}
+
+/// One FILE directive's disc-layout position. Emitted alongside
+/// [`TrackLayout`]s by [`compute_cue_resolved_layout`] so callers that need
+/// to seek into multi-FILE CUE images (per-track BIN rips) know which file
+/// owns each disc-absolute sector.
+#[derive(Debug, Clone)]
+pub struct CueSourceFile {
+    /// Filename as it appears in the CUE's FILE directive. Not a full path.
+    pub filename: String,
+    /// Disc-absolute sector where this file's content begins, i.e.
+    /// `LEAD_IN_FRAMES + sum(prior files' sectors)`.
+    pub file_start_disc_sector: u32,
+    /// Stored bytes per file-relative CUE frame.
+    pub frame_bytes: u64,
+    /// Size of this file in file-relative CUE frames.
+    pub file_sectors: u32,
+}
+
+impl CueSourceFile {
+    /// First disc-absolute sector that does *not* belong to this file.
+    pub fn file_end_disc_sector(&self) -> u32 {
+        self.file_start_disc_sector + self.file_sectors
+    }
+}
+
+/// Richer sibling of [`compute_cue_layout`] that also reports per-file
+/// disc positions. Use this when a caller needs to read PCM from the CUE
+/// — `Vec<TrackLayout>` alone is insufficient for multi-FILE rips because
+/// a single logical track can span two files (the last sectors of track N
+/// physically live in track N+1's BIN if there's an INDEX 00 pregap at
+/// the start of it).
+#[derive(Debug, Clone)]
+pub struct CueResolvedLayout {
+    pub tracks: Vec<TrackLayout>,
+    pub files: Vec<CueSourceFile>,
+}
+
+pub fn compute_cue_resolved_layout(
+    sheet: &CueSheet,
+    bin_size: impl Fn(&str) -> Result<u64, AnalysisError>,
+) -> Result<CueResolvedLayout, AnalysisError> {
     if sheet.files.is_empty() {
         return Err(AnalysisError::invalid_format("CUE has no FILE entries"));
     }
 
-    let mut out: Vec<TrackLayout> = Vec::new();
+    let mut offsets: Vec<u32> = Vec::new();
+    let mut meta: Vec<(u8, String)> = Vec::new();
+    let mut files_out: Vec<CueSourceFile> = Vec::new();
+    let mut program_sectors: u32 = 0;
 
     for file in &sheet.files {
-        if file.tracks.is_empty() {
-            continue;
-        }
-
-        let size_bytes = bin_size(&file.filename)?;
-        if size_bytes % RAW_SECTOR_SIZE != 0 {
-            return Err(AnalysisError::invalid_format(format!(
-                "BIN file '{}' size {} is not a multiple of {}",
-                file.filename, size_bytes, RAW_SECTOR_SIZE
+        if !file.file_type.eq_ignore_ascii_case("BINARY") {
+            return Err(AnalysisError::unsupported(format!(
+                "CUE FILE '{}' uses unsupported container type '{}'",
+                file.filename, file.file_type
             )));
         }
-        let file_sectors = (size_bytes / RAW_SECTOR_SIZE) as u32;
+        let mut frame_bytes = None;
+        for track in &file.tracks {
+            let size = checked_sector_size_for_mode(&track.mode)?;
+            if frame_bytes.is_some_and(|existing| existing != size) {
+                return Err(AnalysisError::unsupported(format!(
+                    "CUE FILE '{}' mixes stored frame sizes; byte offsets are ambiguous",
+                    file.filename
+                )));
+            }
+            frame_bytes = Some(size);
+        }
+        let frame_bytes = frame_bytes.ok_or_else(|| {
+            AnalysisError::invalid_format(format!(
+                "CUE FILE '{}' has no TRACK entries",
+                file.filename
+            ))
+        })?;
+        let size_bytes = bin_size(&file.filename)?;
+        if !size_bytes.is_multiple_of(frame_bytes) {
+            return Err(AnalysisError::invalid_format(format!(
+                "BIN file '{}' size {} is not a multiple of {}",
+                file.filename, size_bytes, frame_bytes
+            )));
+        }
+        let file_sectors = u32::try_from(size_bytes / frame_bytes).map_err(|_| {
+            AnalysisError::invalid_format(format!(
+                "BIN file '{}' contains more frames than the layout can represent",
+                file.filename
+            ))
+        })?;
 
-        // INDEX 01 for each track (required); gather within-file sector offsets.
-        let mut within: Vec<u32> = Vec::with_capacity(file.tracks.len());
+        files_out.push(CueSourceFile {
+            filename: file.filename.clone(),
+            file_start_disc_sector: LEAD_IN_FRAMES
+                .checked_add(program_sectors)
+                .ok_or_else(|| AnalysisError::invalid_format("CUE layout offset overflow"))?,
+            frame_bytes,
+            file_sectors,
+        });
+
         for track in &file.tracks {
             let idx1 = track
                 .indexes
@@ -770,50 +884,66 @@ pub fn compute_cue_layout(
                         track.number
                     ))
                 })?;
-            within.push(idx1.to_sector_offset() as u32);
+            let within = u32::try_from(idx1.to_sector_offset()).map_err(|_| {
+                AnalysisError::invalid_format(format!(
+                    "track {} INDEX 01 exceeds the supported layout range",
+                    track.number
+                ))
+            })?;
+            if within >= file_sectors {
+                return Err(AnalysisError::invalid_format(format!(
+                    "BIN '{}' ends before track {}'s INDEX 01",
+                    file.filename, track.number
+                )));
+            }
+            offsets.push(
+                LEAD_IN_FRAMES
+                    .checked_add(program_sectors)
+                    .and_then(|offset| offset.checked_add(within))
+                    .ok_or_else(|| AnalysisError::invalid_format("CUE layout offset overflow"))?,
+            );
+            meta.push((track.number, track.mode.clone()));
         }
 
-        // Within-file lengths: next track's INDEX 01 for all but the last;
-        // file size - last within-file offset for the final track.
-        let n = file.tracks.len();
-        for (i, track) in file.tracks.iter().enumerate() {
-            let length = if i + 1 < n {
-                within[i + 1].checked_sub(within[i]).ok_or_else(|| {
-                    AnalysisError::invalid_format(
-                        "CUE INDEX 01 offsets are not monotonically increasing",
-                    )
-                })?
-            } else {
-                file_sectors.checked_sub(within[i]).ok_or_else(|| {
-                    AnalysisError::invalid_format(format!(
-                        "BIN '{}' ends before track {}'s INDEX 01",
-                        file.filename, track.number
-                    ))
-                })?
-            };
-
-            let absolute_offset = match out.last() {
-                None => LEAD_IN_FRAMES + within[i],
-                Some(prev) => prev.absolute_offset + prev.length_sectors,
-            };
-
-            out.push(TrackLayout {
-                number: track.number,
-                absolute_offset,
-                length_sectors: length,
-                kind: classify_mode(&track.mode),
-                mode: track.mode.clone(),
-            });
-        }
+        program_sectors = program_sectors
+            .checked_add(file_sectors)
+            .ok_or_else(|| AnalysisError::invalid_format("CUE layout length overflow"))?;
     }
 
-    if out.is_empty() {
+    if offsets.is_empty() {
         return Err(AnalysisError::invalid_format(
             "CUE has no tracks after parsing",
         ));
     }
 
-    Ok(out)
+    for pair in offsets.windows(2) {
+        if pair[0] >= pair[1] {
+            return Err(AnalysisError::invalid_format(
+                "CUE INDEX 01 offsets are not monotonically increasing",
+            ));
+        }
+    }
+
+    let leadout = LEAD_IN_FRAMES
+        .checked_add(program_sectors)
+        .ok_or_else(|| AnalysisError::invalid_format("CUE lead-out overflow"))?;
+    let mut tracks: Vec<TrackLayout> = Vec::with_capacity(offsets.len());
+    for (i, (number, mode)) in meta.into_iter().enumerate() {
+        let next = offsets.get(i + 1).copied().unwrap_or(leadout);
+        let length = next - offsets[i];
+        tracks.push(TrackLayout {
+            number,
+            absolute_offset: offsets[i],
+            length_sectors: length,
+            kind: classify_mode(&mode),
+            mode,
+        });
+    }
+
+    Ok(CueResolvedLayout {
+        tracks,
+        files: files_out,
+    })
 }
 
 /// Read a CUE file from disk and return its absolute-sector layout.
@@ -826,10 +956,7 @@ pub fn compute_cue_layout(
 ///   stats each file for its size in bytes.
 pub fn read_cue_layout(path: &Path) -> Result<Vec<TrackLayout>, AnalysisError> {
     let text = std::fs::read_to_string(path)?;
-    let cue_dir: PathBuf = path
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(PathBuf::new);
+    let cue_dir: PathBuf = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
 
     let compat = check_cue_compat(&text);
     let effective_text = if compat.is_standard() {
@@ -843,7 +970,7 @@ pub fn read_cue_layout(path: &Path) -> Result<Vec<TrackLayout>, AnalysisError> {
     let sheet = parse_cue(&effective_text)?;
 
     compute_cue_layout(&sheet, |filename| {
-        let bin_path = cue_dir.join(filename);
+        let bin_path = resolve_local_file(&cue_dir, filename)?;
         let meta = std::fs::metadata(&bin_path).map_err(|e| {
             AnalysisError::Io(std::io::Error::new(
                 e.kind(),

@@ -1,7 +1,7 @@
 //! CD-ROM sector constants and low-level sector reading.
 
 use junk_libs_core::AnalysisError;
-use std::io::{Read, SeekFrom};
+use std::io::SeekFrom;
 
 use crate::format::DiscFormat;
 
@@ -80,20 +80,23 @@ fn read_sector_data_with_offset(
     raw_data_offset: u64,
 ) -> Result<[u8; 2048], AnalysisError> {
     let offset = match format {
-        DiscFormat::Iso2048 => sector * ISO_SECTOR_SIZE,
-        DiscFormat::RawSector2352 => sector * RAW_SECTOR_SIZE + raw_data_offset,
+        DiscFormat::Iso2048 => sector.checked_mul(ISO_SECTOR_SIZE),
+        DiscFormat::RawSector2352 => sector
+            .checked_mul(RAW_SECTOR_SIZE)
+            .and_then(|offset| offset.checked_add(raw_data_offset)),
         _ => {
             return Err(AnalysisError::unsupported(
                 "Cannot read sectors directly from CUE/CHD format",
             ));
         }
-    };
+    }
+    .ok_or_else(|| AnalysisError::corrupted_header("disc sector byte offset overflow"))?;
 
     reader.seek(SeekFrom::Start(offset))?;
     let mut data = [0u8; 2048];
     reader.read_exact(&mut data).map_err(|e| {
         if e.kind() == std::io::ErrorKind::UnexpectedEof {
-            AnalysisError::corrupted_header(format!("Sector {} is beyond end of image", sector))
+            AnalysisError::corrupted_header(format!("Sector {sector} is beyond end of image"))
         } else {
             AnalysisError::Io(e)
         }

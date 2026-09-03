@@ -25,11 +25,9 @@ pub struct PrimaryVolumeDescriptor {
 
 /// A parsed ISO 9660 directory record.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DirectoryRecord {
     pub extent_lba: u32,
     pub data_length: u32,
-    pub file_flags: u8,
     pub file_identifier: String,
 }
 
@@ -63,6 +61,12 @@ pub fn parse_pvd_data(sector_data: &[u8; 2048]) -> Result<PrimaryVolumeDescripto
             "Missing CD001 signature in PVD",
         ));
     }
+    if sector_data[6] != 1 {
+        return Err(AnalysisError::invalid_format(format!(
+            "Unsupported ISO 9660 descriptor version {}",
+            sector_data[6]
+        )));
+    }
 
     let system_identifier = read_str_a(&sector_data[8..40]);
     let volume_identifier = read_str_a(&sector_data[40..72]);
@@ -74,21 +78,41 @@ pub fn parse_pvd_data(sector_data: &[u8; 2048]) -> Result<PrimaryVolumeDescripto
         sector_data[82],
         sector_data[83],
     ]);
+    let volume_space_size_be = u32::from_be_bytes([
+        sector_data[84],
+        sector_data[85],
+        sector_data[86],
+        sector_data[87],
+    ]);
+    if volume_space_size == 0 || volume_space_size != volume_space_size_be {
+        return Err(AnalysisError::corrupted_header(
+            "ISO 9660 volume-space size endian copies disagree or are zero",
+        ));
+    }
+
+    let logical_block_size = u16::from_le_bytes([sector_data[128], sector_data[129]]);
+    let logical_block_size_be = u16::from_be_bytes([sector_data[130], sector_data[131]]);
+    if logical_block_size != 2048 || logical_block_size_be != 2048 {
+        return Err(AnalysisError::unsupported(
+            "ISO 9660 logical block size is not 2048 bytes",
+        ));
+    }
 
     // Root directory record at offset 156, 34 bytes
     let root_record = &sector_data[156..190];
-    let root_dir_extent_lba = u32::from_le_bytes([
-        root_record[2],
-        root_record[3],
-        root_record[4],
-        root_record[5],
-    ]);
-    let root_dir_data_length = u32::from_le_bytes([
-        root_record[10],
-        root_record[11],
-        root_record[12],
-        root_record[13],
-    ]);
+    let root = parse_directory_record(root_record).ok_or_else(|| {
+        AnalysisError::corrupted_header("ISO 9660 root directory record is malformed")
+    })?;
+    let root_dir_extent_lba = root.extent_lba;
+    let root_dir_data_length = root.data_length;
+    let root_end = u64::from(root_dir_extent_lba)
+        .checked_add(u64::from(root_dir_data_length).div_ceil(crate::sector::ISO_SECTOR_SIZE))
+        .ok_or_else(|| AnalysisError::corrupted_header("ISO 9660 root extent overflow"))?;
+    if root_end > u64::from(volume_space_size) {
+        return Err(AnalysisError::corrupted_header(
+            "ISO 9660 root directory extends beyond the declared volume",
+        ));
+    }
 
     Ok(PrimaryVolumeDescriptor {
         system_identifier,
@@ -100,6 +124,7 @@ pub fn parse_pvd_data(sector_data: &[u8; 2048]) -> Result<PrimaryVolumeDescripto
 }
 
 /// Read a padded ISO 9660 string (strip trailing spaces).
+#[must_use]
 pub fn read_str_a(bytes: &[u8]) -> String {
     let s = std::str::from_utf8(bytes).unwrap_or("");
     s.trim_end().to_string()
@@ -115,10 +140,10 @@ pub fn find_file_in_root(
     let target_upper = filename.to_uppercase();
 
     // Read root directory sectors
-    let dir_sectors = (pvd.root_dir_data_length as u64).div_ceil(crate::sector::ISO_SECTOR_SIZE);
+    let dir_sectors = u64::from(pvd.root_dir_data_length).div_ceil(crate::sector::ISO_SECTOR_SIZE);
 
     for sector_offset in 0..dir_sectors {
-        let sector = pvd.root_dir_extent_lba as u64 + sector_offset;
+        let sector = u64::from(pvd.root_dir_extent_lba) + sector_offset;
         let sector_data = read_sector_data(reader, sector, format)?;
 
         let mut pos = 0;
@@ -138,6 +163,18 @@ pub fn find_file_in_root(
                 let id_stripped = id_upper.split(';').next().unwrap_or(&id_upper);
 
                 if id_stripped == target_upper {
+                    let file_end = u64::from(dir_rec.extent_lba)
+                        .checked_add(
+                            u64::from(dir_rec.data_length).div_ceil(crate::sector::ISO_SECTOR_SIZE),
+                        )
+                        .ok_or_else(|| {
+                            AnalysisError::corrupted_header("ISO 9660 file extent overflow")
+                        })?;
+                    if file_end > u64::from(pvd.volume_space_size) {
+                        return Err(AnalysisError::corrupted_header(
+                            "ISO 9660 file extends beyond the declared volume",
+                        ));
+                    }
                     // Found it — read the file content
                     return read_file_content(reader, format, &dir_rec);
                 }
@@ -148,24 +185,28 @@ pub fn find_file_in_root(
     }
 
     Err(AnalysisError::other(format!(
-        "File '{}' not found in root directory",
-        filename
+        "File '{filename}' not found in root directory"
     )))
 }
 
 /// Parse a single ISO 9660 directory record.
+#[must_use]
 pub fn parse_directory_record(data: &[u8]) -> Option<DirectoryRecord> {
     if data.len() < 33 {
         return None;
     }
     let record_len = data[0] as usize;
-    if record_len < 33 {
+    if record_len < 33 || record_len > data.len() {
         return None;
     }
 
     let extent_lba = u32::from_le_bytes([data[2], data[3], data[4], data[5]]);
+    let extent_lba_be = u32::from_be_bytes([data[6], data[7], data[8], data[9]]);
     let data_length = u32::from_le_bytes([data[10], data[11], data[12], data[13]]);
-    let file_flags = data[25];
+    let data_length_be = u32::from_be_bytes([data[14], data[15], data[16], data[17]]);
+    if extent_lba != extent_lba_be || data_length != data_length_be {
+        return None;
+    }
     let id_len = data[32] as usize;
 
     if 33 + id_len > record_len {
@@ -183,7 +224,6 @@ pub fn parse_directory_record(data: &[u8]) -> Option<DirectoryRecord> {
     Some(DirectoryRecord {
         extent_lba,
         data_length,
-        file_flags,
         file_identifier,
     })
 }
@@ -200,11 +240,11 @@ pub fn read_file_content(
         ));
     }
     let mut result = Vec::with_capacity(record.data_length as usize);
-    let sectors_needed = (record.data_length as u64).div_ceil(crate::sector::ISO_SECTOR_SIZE);
+    let sectors_needed = u64::from(record.data_length).div_ceil(crate::sector::ISO_SECTOR_SIZE);
     let mut remaining = record.data_length as usize;
 
     for i in 0..sectors_needed {
-        let sector = record.extent_lba as u64 + i;
+        let sector = u64::from(record.extent_lba) + i;
         let sector_data = read_sector_data(reader, sector, format)?;
         let to_copy = remaining.min(crate::sector::ISO_SECTOR_SIZE as usize);
         result.extend_from_slice(&sector_data[..to_copy]);
