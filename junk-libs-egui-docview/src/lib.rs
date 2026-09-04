@@ -38,6 +38,11 @@ pub struct RegionId(pub u64);
 /// widget filters/derives everything else (screen transform, hit-testing) itself.
 pub trait PageModel {
     fn page_count(&self) -> usize;
+    /// Optional document-defined label (roman-numeral front matter, prefixed
+    /// appendices, and similar). Physical navigation remains zero-based.
+    fn page_label(&self, _page: usize) -> Option<&str> {
+        None
+    }
     /// Page size in page points (e.g. PDF points), if the page exists.
     fn page_size(&self, page: usize) -> Option<(f32, f32)>;
     /// The page's rasterized bitmap (RGBA), if rendered.
@@ -142,6 +147,61 @@ const ACCENT_FILL: Color32 = Color32::from_rgba_premultiplied(0x12, 0x25, 0x40, 
 /// Highlight for the region/handle the idle pointer is over.
 const HOVER: Color32 = Color32::from_rgb(0xff, 0xcc, 0x66);
 
+/// The user-facing zoom choice. `ActualSize` means one PDF point per egui
+/// logical point; monitor pixel density is handled separately when requesting a
+/// crisp raster from the host.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+pub enum ZoomMode {
+    ActualSize,
+    #[default]
+    FitWidth,
+    FitPage,
+    Percent(f32),
+}
+
+/// A position within a page, normalized so it survives changes in page size.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct NormalizedPagePoint {
+    pub x: f32,
+    pub y: f32,
+}
+
+impl Default for NormalizedPagePoint {
+    fn default() -> Self {
+        Self { x: 0.5, y: 0.0 }
+    }
+}
+
+/// Host-owned viewer state. Keeping this outside [`DocView`] lets an
+/// application preserve navigation and zoom while replacing a regenerated
+/// document, without serializing textures or in-progress pointer gestures.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+pub struct ViewState {
+    pub page_index: usize,
+    pub zoom_mode: ZoomMode,
+    pub viewport_anchor: NormalizedPagePoint,
+}
+
+impl ViewState {
+    pub fn navigate_to(&mut self, page_index: usize, top_fraction: f32) {
+        self.page_index = page_index;
+        self.viewport_anchor = NormalizedPagePoint {
+            x: 0.5,
+            y: top_fraction.clamp(0.0, 1.0),
+        };
+    }
+}
+
+/// Observable changes produced by one viewer frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ViewOutput {
+    pub edited: bool,
+    pub page_changed: bool,
+    pub zoom_changed: bool,
+    /// Quantized pixels-per-point requested from [`PageModel::rerender_page`].
+    pub render_scale: f32,
+}
+
 /// What the pointer is doing between press and release. Coordinates are in page
 /// points.
 #[derive(Default)]
@@ -188,11 +248,11 @@ struct Canvas {
 
 impl Canvas {
     /// Page point → screen position this frame.
-    fn to_screen(&self, p: Pos2) -> Pos2 {
+    fn to_screen(self, p: Pos2) -> Pos2 {
         self.rect.min + p.to_vec2() * self.scale
     }
     /// Screen position → page point this frame.
-    fn to_page(&self, s: Pos2) -> Pos2 {
+    fn to_page(self, s: Pos2) -> Pos2 {
         ((s - self.rect.min) / self.scale).to_pos2()
     }
 }
@@ -206,10 +266,6 @@ pub struct DocView {
     /// Render scale (px/pt) the current texture was built at, so we rebuild it
     /// when the page is re-rendered at a different resolution.
     texture_scale: f32,
-    /// On-screen magnification (1.0 = page shown at its native point size).
-    zoom: f32,
-    /// When true, zoom is recomputed each frame to fit the viewport width.
-    fit: bool,
     drag: Drag,
     /// Middle-button panning in progress (drag-scrolls the view, never draws).
     panning: bool,
@@ -223,6 +279,11 @@ pub struct DocView {
     /// has been requested yet (or state was reset).
     requested_page: Option<usize>,
     requested_scale: f32,
+    /// Reapply the host's normalized anchor after a document swap or explicit
+    /// navigation rather than carrying an obsolete pixel offset forward.
+    restore_anchor: bool,
+    last_page: Option<usize>,
+    resolved_zoom: f32,
 }
 
 impl Default for DocView {
@@ -231,29 +292,30 @@ impl Default for DocView {
             texture: None,
             texture_page: 0,
             texture_scale: 0.0,
-            zoom: 1.0,
-            fit: true,
             drag: Drag::Idle,
             panning: false,
             scroll_offset: Vec2::ZERO,
             requested_page: None,
             requested_scale: 0.0,
+            restore_anchor: true,
+            last_page: None,
+            resolved_zoom: 1.0,
         }
     }
 }
 
 impl DocView {
-    /// Invalidate cached state (e.g. when a new document is opened).
-    pub fn reset(&mut self) {
+    /// Invalidate document-derived transient state while preserving the
+    /// host-owned [`ViewState`]. Use this for a regenerated/replaced document.
+    pub fn invalidate_document(&mut self) {
         self.texture = None;
         self.texture_scale = 0.0;
         self.drag = Drag::Idle;
         self.panning = false;
-        self.scroll_offset = Vec2::ZERO;
-        self.fit = true;
-        self.zoom = 1.0;
         self.requested_page = None;
         self.requested_scale = 0.0;
+        self.restore_anchor = true;
+        self.last_page = None;
     }
 
     /// Shared view core: control bar (zoom, fit, page nav, host `extra_controls`),
@@ -267,81 +329,161 @@ impl DocView {
         &mut self,
         ui: &mut egui::Ui,
         model: &mut M,
-        current_page: &mut usize,
+        state: &mut ViewState,
         extra_controls: impl FnOnce(&mut egui::Ui),
         on_canvas: impl FnOnce(&mut egui::Ui, &mut M, &mut Drag, &egui::Response, Canvas) -> bool,
-    ) -> bool {
+    ) -> ViewOutput {
         let total_pages = model.page_count();
         let mut edited = false;
+        let initial_page = state.page_index;
+        let initial_zoom_mode = state.zoom_mode;
+        state.page_index = state.page_index.min(total_pages.saturating_sub(1));
 
         // Accumulates this frame's zoom change (from buttons and/or Ctrl+scroll) as
         // a single ratio, applied below to keep a fixed point (cursor or viewport
         // center) pinned while zooming.
         let mut zoom_factor = 1.0;
 
-        // --- control bar: zoom + page navigation ---------------------------
-        ui.horizontal(|ui| {
-            if ui.button("−").on_hover_text("Zoom out").clicked() {
-                let new = (self.zoom / ZOOM_STEP).max(MIN_ZOOM);
-                zoom_factor *= new / self.zoom;
-                self.zoom = new;
-                self.fit = false;
-            }
-            ui.label(format!("{:.0}%", self.zoom * 100.0));
-            if ui.button("+").on_hover_text("Zoom in").clicked() {
-                let new = (self.zoom * ZOOM_STEP).min(MAX_ZOOM);
-                zoom_factor *= new / self.zoom;
-                self.zoom = new;
-                self.fit = false;
-            }
-            if ui.selectable_label(self.fit, "Fit width").clicked() {
-                self.fit = true;
-            }
+        // --- control bar: two responsive groups ----------------------------
+        // The nested horizontal rows are single wrap units: navigation and zoom
+        // stay internally coherent, while the groups move to a second line in a
+        // narrow embedded preview.
+        ui.horizontal_wrapped(|ui| {
+            ui.horizontal(|ui| {
+                let last_page = total_pages.saturating_sub(1);
+                if ui
+                    .add_enabled(state.page_index > 0, egui::Button::new("⏮"))
+                    .on_hover_text("First page")
+                    .clicked()
+                {
+                    state.navigate_to(0, 0.0);
+                }
+                if ui
+                    .add_enabled(state.page_index > 0, egui::Button::new("◀"))
+                    .on_hover_text("Previous page")
+                    .clicked()
+                {
+                    state.navigate_to(state.page_index - 1, 0.0);
+                }
+                ui.label("Page");
+                let mut page_number = state.page_index.saturating_add(1);
+                if ui
+                    .add_enabled(
+                        total_pages > 0,
+                        egui::DragValue::new(&mut page_number)
+                            .range(1..=total_pages.max(1))
+                            .speed(0.2),
+                    )
+                    .changed()
+                {
+                    state.navigate_to(page_number.saturating_sub(1), 0.0);
+                }
+                ui.label(format!("of {total_pages}"));
+                if let Some(label) = model.page_label(state.page_index)
+                    && label != page_number.to_string()
+                {
+                    ui.label(format!("({label})"));
+                }
+                if ui
+                    .add_enabled(state.page_index < last_page, egui::Button::new("▶"))
+                    .on_hover_text("Next page")
+                    .clicked()
+                {
+                    state.navigate_to(state.page_index + 1, 0.0);
+                }
+                if ui
+                    .add_enabled(state.page_index < last_page, egui::Button::new("⏭"))
+                    .on_hover_text("Last page")
+                    .clicked()
+                {
+                    state.navigate_to(last_page, 0.0);
+                }
+            });
 
-            // Host-supplied controls (e.g. a translation-overlay toggle).
+            // Host-supplied controls (e.g. an outline jump or overlay toggle).
             extra_controls(ui);
 
-            if total_pages > 1 {
-                ui.separator();
-                if ui
-                    .add_enabled(*current_page > 0, egui::Button::new("◀"))
-                    .clicked()
-                {
-                    *current_page -= 1;
+            ui.horizontal(|ui| {
+                let current_zoom = self.resolved_zoom;
+                if ui.button("−").on_hover_text("Zoom out").clicked() {
+                    let new = (current_zoom / ZOOM_STEP).clamp(MIN_ZOOM, MAX_ZOOM);
+                    zoom_factor *= new / current_zoom.max(f32::EPSILON);
+                    state.zoom_mode = ZoomMode::Percent(new);
                 }
-                ui.label(format!("Page {} / {}", *current_page + 1, total_pages));
-                if ui
-                    .add_enabled(*current_page + 1 < total_pages, egui::Button::new("▶"))
-                    .clicked()
-                {
-                    *current_page += 1;
+                ui.label(format!("{:.0}%", current_zoom * 100.0));
+                if ui.button("+").on_hover_text("Zoom in").clicked() {
+                    let new = (current_zoom * ZOOM_STEP).clamp(MIN_ZOOM, MAX_ZOOM);
+                    zoom_factor *= new / current_zoom.max(f32::EPSILON);
+                    state.zoom_mode = ZoomMode::Percent(new);
                 }
-            }
+                egui::ComboBox::from_id_salt("docview_zoom_mode")
+                    .selected_text(zoom_mode_label(state.zoom_mode))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut state.zoom_mode,
+                            ZoomMode::ActualSize,
+                            "Actual size (100%)",
+                        );
+                        ui.selectable_value(&mut state.zoom_mode, ZoomMode::FitWidth, "Fit width");
+                        ui.selectable_value(&mut state.zoom_mode, ZoomMode::FitPage, "Fit page");
+                    });
+            });
         });
         ui.separator();
 
-        let Some(page_size_pts) = model.page_size(*current_page) else {
+        let Some(page_size_pts) = model.page_size(state.page_index) else {
             self.texture = None;
             ui.centered_and_justified(|ui| {
                 ui.label("Open a PDF or image to begin.");
             });
-            return edited;
+            return ViewOutput {
+                edited,
+                page_changed: initial_page != state.page_index,
+                zoom_changed: initial_zoom_mode != state.zoom_mode,
+                render_scale: 1.0,
+            };
         };
         let page_size = egui::vec2(page_size_pts.0, page_size_pts.1);
 
-        // Resolve the on-screen zoom (fit-to-width / Ctrl+scroll) before rendering.
-        if self.fit && page_size.x > 0.0 {
-            self.zoom = (ui.available_width() / page_size.x).clamp(MIN_ZOOM, MAX_ZOOM);
+        let viewport = ui.available_rect_before_wrap();
+        let old_zoom = self.resolved_zoom;
+        self.resolved_zoom = zoom_for_mode(state.zoom_mode, page_size, viewport.size());
+
+        // Keyboard navigation is intentionally scoped to the hovered viewer and
+        // disabled while a text field owns focus, so page keys never hijack form
+        // editing elsewhere in an embedded preview.
+        let viewer_hovered =
+            viewport.contains(ui.input(|i| i.pointer.hover_pos().unwrap_or_default()));
+        let text_editing = ui.memory(|memory| memory.focused().is_some());
+        if viewer_hovered && !text_editing {
+            ui.input_mut(|input| {
+                if input.consume_key(egui::Modifiers::NONE, egui::Key::Home) {
+                    state.navigate_to(0, 0.0);
+                } else if input.consume_key(egui::Modifiers::NONE, egui::Key::End) {
+                    state.navigate_to(total_pages.saturating_sub(1), 0.0);
+                } else if input.consume_key(egui::Modifiers::NONE, egui::Key::PageUp)
+                    && state.page_index > 0
+                {
+                    state.navigate_to(state.page_index - 1, 0.0);
+                } else if input.consume_key(egui::Modifiers::NONE, egui::Key::PageDown)
+                    && state.page_index + 1 < total_pages
+                {
+                    state.navigate_to(state.page_index + 1, 0.0);
+                }
+            });
         }
+
         // Ctrl+scroll (and trackpad pinch) zooms. egui routes the ctrl-modified
         // wheel into `zoom_delta` (a multiplicative factor) and keeps it out of the
         // scroll delta, so the ScrollArea below won't also pan — read it directly.
         let zoom_delta = ui.input(|i| i.zoom_delta());
         if (zoom_delta - 1.0).abs() > f32::EPSILON {
-            let old = self.zoom;
-            self.zoom = (self.zoom * zoom_delta).clamp(MIN_ZOOM, MAX_ZOOM);
-            self.fit = false;
-            zoom_factor *= self.zoom / old;
+            let new = (self.resolved_zoom * zoom_delta).clamp(MIN_ZOOM, MAX_ZOOM);
+            state.zoom_mode = ZoomMode::Percent(new);
+            zoom_factor *= new / self.resolved_zoom.max(f32::EPSILON);
+            self.resolved_zoom = new;
+        } else if (old_zoom - self.resolved_zoom).abs() > f32::EPSILON {
+            zoom_factor *= self.resolved_zoom / old_zoom.max(f32::EPSILON);
         }
 
         // Request a render of the current page at a scale matching the on-screen
@@ -353,36 +495,42 @@ impl DocView {
         // bitmap the same frame, so behavior there is unchanged). A no-op for
         // image sources.
         let ppp = ui.ctx().pixels_per_point();
-        let target_scale = render_scale_for(self.zoom, ppp);
-        if self.requested_page != Some(*current_page)
+        let target_scale = render_scale_for(self.resolved_zoom, ppp);
+        if self.requested_page != Some(state.page_index)
             || (self.requested_scale - target_scale).abs() > 0.1
         {
-            model.rerender_page(*current_page, target_scale);
-            self.requested_page = Some(*current_page);
+            model.rerender_page(state.page_index, target_scale);
+            self.requested_page = Some(state.page_index);
             self.requested_scale = target_scale;
         }
 
         // (Re)build the texture when the page changed or its raster scale changed.
-        let bitmap_scale = page_scale(&*model, *current_page);
-        if self.texture.is_none()
-            || self.texture_page != *current_page
-            || (self.texture_scale - bitmap_scale).abs() > 0.01
+        let bitmap_scale = page_scale(&*model, state.page_index);
+        if (self.texture.is_none()
+            || self.texture_page != state.page_index
+            || (self.texture_scale - bitmap_scale).abs() > 0.01)
+            && let Some(bmp) = model.page_bitmap(state.page_index)
         {
-            if let Some(bmp) = model.page_bitmap(*current_page) {
-                let size = [bmp.width() as usize, bmp.height() as usize];
-                let img = egui::ColorImage::from_rgba_unmultiplied(size, bmp.as_raw());
-                self.texture =
-                    Some(ui.ctx().load_texture("page", img, egui::TextureOptions::LINEAR));
-                self.texture_page = *current_page;
-                self.texture_scale = bitmap_scale;
-            }
+            let size = [bmp.width() as usize, bmp.height() as usize];
+            let img = egui::ColorImage::from_rgba_unmultiplied(size, bmp.as_raw());
+            self.texture = Some(
+                ui.ctx()
+                    .load_texture("page", img, egui::TextureOptions::LINEAR),
+            );
+            self.texture_page = state.page_index;
+            self.texture_scale = bitmap_scale;
         }
         let Some(texture) = self.texture.as_ref() else {
-            return edited;
+            return ViewOutput {
+                edited,
+                page_changed: initial_page != state.page_index,
+                zoom_changed: initial_zoom_mode != state.zoom_mode,
+                render_scale: target_scale,
+            };
         };
         let tex_id = texture.id();
 
-        let display = page_size * self.zoom;
+        let display = page_size * self.resolved_zoom;
 
         // Zoom keeps a fixed anchor pinned. Rather than nudging the offset *after*
         // layout (which lands a frame late and visibly drifts into place), we drive
@@ -391,23 +539,37 @@ impl DocView {
         // else the view's center (zoom buttons / keyboard). With `O` the old offset
         // and `f` the zoom ratio, `O' = f·O + (f−1)·(anchor − viewport.min)` keeps
         // the page-point under the anchor fixed.
-        let viewport = ui.available_rect_before_wrap();
-        let forced_offset = ((zoom_factor - 1.0).abs() > f32::EPSILON).then(|| {
-            let anchor = ui
-                .input(|i| i.pointer.hover_pos())
-                .filter(|p| viewport.contains(*p))
-                .unwrap_or_else(|| viewport.center());
-            let target =
-                self.scroll_offset * zoom_factor + (anchor - viewport.min) * (zoom_factor - 1.0);
-            // Clamp to the real scroll range. A dimension where the page *fits* has
-            // an empty range, so its offset pins to 0 (centered). Without this egui
-            // would position the content at the raw offset and only clamp afterward
-            // — that per-frame shift-then-snap is the jitter.
+        if self.last_page != Some(state.page_index) {
+            self.restore_anchor = true;
+            self.last_page = Some(state.page_index);
+        }
+        let forced_offset = if self.restore_anchor {
+            let target = egui::vec2(
+                display.x * state.viewport_anchor.x - viewport.width() * 0.5,
+                display.y * state.viewport_anchor.y,
+            );
             let max_off = (display - viewport.size()).max(Vec2::ZERO);
-            target.max(Vec2::ZERO).min(max_off)
-        });
+            Some(target.max(Vec2::ZERO).min(max_off))
+        } else {
+            ((zoom_factor - 1.0).abs() > f32::EPSILON).then(|| {
+                let anchor = ui
+                    .input(|i| i.pointer.hover_pos())
+                    .filter(|p| viewport.contains(*p))
+                    .unwrap_or_else(|| viewport.center());
+                let target = self.scroll_offset * zoom_factor
+                    + (anchor - viewport.min) * (zoom_factor - 1.0);
+                // Clamp to the real scroll range. A dimension where the page *fits* has
+                // an empty range, so its offset pins to 0 (centered). Without this egui
+                // would position the content at the raw offset and only clamp afterward
+                // — that per-frame shift-then-snap is the jitter.
+                let max_off = (display - viewport.size()).max(Vec2::ZERO);
+                target.max(Vec2::ZERO).min(max_off)
+            })
+        };
 
-        let mut area = egui::ScrollArea::both().id_salt("page_scroll").auto_shrink([false; 2]);
+        let mut area = egui::ScrollArea::both()
+            .id_salt("page_scroll")
+            .auto_shrink([false; 2]);
         if let Some(off) = forced_offset {
             area = area.scroll_offset(off);
         }
@@ -453,7 +615,7 @@ impl DocView {
             // Hand the laid-out page to the host layer (region editing in `show`,
             // a no-op in `show_readonly`) to interact with and paint over.
             let canvas = Canvas {
-                page: *current_page,
+                page: state.page_index,
                 rect,
                 scale,
                 bitmap_scale,
@@ -466,8 +628,20 @@ impl DocView {
         // Mirror the (possibly clamped) offset so next frame's zoom math starts
         // from where the view actually is — including manual scrolls and pans.
         self.scroll_offset = out.state.offset;
+        self.restore_anchor = false;
+        if display.x > 0.0 && display.y > 0.0 {
+            state.viewport_anchor = NormalizedPagePoint {
+                x: ((self.scroll_offset.x + viewport.width() * 0.5) / display.x).clamp(0.0, 1.0),
+                y: (self.scroll_offset.y / display.y).clamp(0.0, 1.0),
+            };
+        }
 
-        edited
+        ViewOutput {
+            edited,
+            page_changed: initial_page != state.page_index,
+            zoom_changed: initial_zoom_mode != state.zoom_mode,
+            render_scale: target_scale,
+        }
     }
 
     /// Render the page with interactive region editing: draw, select, move,
@@ -479,15 +653,15 @@ impl DocView {
         &mut self,
         ui: &mut egui::Ui,
         model: &mut impl PageModel,
-        current_page: &mut usize,
+        state: &mut ViewState,
         selected: &mut Option<RegionId>,
         overlay: &mut impl RegionOverlay,
         extra_controls: impl FnOnce(&mut egui::Ui),
-    ) -> bool {
+    ) -> ViewOutput {
         self.show_page(
             ui,
             model,
-            current_page,
+            state,
             extra_controls,
             |ui, model, drag, resp, canvas| {
                 let mut edited = false;
@@ -500,37 +674,37 @@ impl DocView {
                 // *press origin*, not interact_pointer_pos: the latter is only
                 // sampled once the drag threshold is crossed, which offsets the
                 // start by a few pixels from where the user actually clicked.
-                if resp.drag_started_by(egui::PointerButton::Primary) {
-                    if let Some(press) = ui.input(|i| i.pointer.press_origin()) {
-                        *drag = decide_drag(&regions, *selected, canvas.to_page(press), canvas.scale);
-                        match *drag {
-                            Drag::Moving { id, .. } | Drag::Resizing { id, .. } => {
-                                *selected = Some(id);
-                            }
-                            _ => {}
+                if resp.drag_started_by(egui::PointerButton::Primary)
+                    && let Some(press) = ui.input(|i| i.pointer.press_origin())
+                {
+                    *drag = decide_drag(&regions, *selected, canvas.to_page(press), canvas.scale);
+                    match *drag {
+                        Drag::Moving { id, .. } | Drag::Resizing { id, .. } => {
+                            *selected = Some(id);
                         }
+                        _ => {}
                     }
                 }
-                if resp.dragged_by(egui::PointerButton::Primary) {
-                    if let Some(ptr) = resp.interact_pointer_pos() {
-                        let pp = canvas.to_page(ptr);
-                        match drag {
-                            Drag::Drawing { current, .. } => *current = pp,
-                            Drag::Moving { id, grab } => {
-                                if let Some(r) = model.region_rect_mut(*id) {
-                                    r.x = pp.x - grab.x;
-                                    r.y = pp.y - grab.y;
-                                    edited = true;
-                                }
+                if resp.dragged_by(egui::PointerButton::Primary)
+                    && let Some(ptr) = resp.interact_pointer_pos()
+                {
+                    let pp = canvas.to_page(ptr);
+                    match drag {
+                        Drag::Drawing { current, .. } => *current = pp,
+                        Drag::Moving { id, grab } => {
+                            if let Some(r) = model.region_rect_mut(*id) {
+                                r.x = pp.x - grab.x;
+                                r.y = pp.y - grab.y;
+                                edited = true;
                             }
-                            Drag::Resizing { id, fixed } => {
-                                if let Some(r) = model.region_rect_mut(*id) {
-                                    *r = norm_rect(*fixed, pp);
-                                    edited = true;
-                                }
-                            }
-                            Drag::Idle => {}
                         }
+                        Drag::Resizing { id, fixed } => {
+                            if let Some(r) = model.region_rect_mut(*id) {
+                                *r = norm_rect(*fixed, pp);
+                                edited = true;
+                            }
+                        }
+                        Drag::Idle => {}
                     }
                 }
                 if resp.drag_stopped_by(egui::PointerButton::Primary) {
@@ -543,10 +717,10 @@ impl DocView {
                     }
                     *drag = Drag::Idle;
                 }
-                if resp.clicked() {
-                    if let Some(ptr) = resp.interact_pointer_pos() {
-                        *selected = topmost_at(&regions, canvas.to_page(ptr));
-                    }
+                if resp.clicked()
+                    && let Some(ptr) = resp.interact_pointer_pos()
+                {
+                    *selected = topmost_at(&regions, canvas.to_page(ptr));
                 }
 
                 // What the idle pointer is over — for the hover highlight + cursor,
@@ -640,19 +814,33 @@ impl DocView {
                         egui::StrokeKind::Inside,
                     );
                     if is_sel {
-                        let corners =
-                            [scr.left_top(), scr.right_top(), scr.left_bottom(), scr.right_bottom()];
+                        let corners = [
+                            scr.left_top(),
+                            scr.right_top(),
+                            scr.left_bottom(),
+                            scr.right_bottom(),
+                        ];
                         for (i, corner) in corners.iter().enumerate() {
                             // Enlarge + recolor the handle under the pointer.
-                            let on = matches!(hover, Hover::Handle(hid, hi) if hid == id && hi == i);
-                            let h = ERect::from_center_size(*corner, Vec2::splat(if on { HANDLE * 1.6 } else { HANDLE }));
+                            let on =
+                                matches!(hover, Hover::Handle(hid, hi) if hid == id && hi == i);
+                            let h = ERect::from_center_size(
+                                *corner,
+                                Vec2::splat(if on { HANDLE * 1.6 } else { HANDLE }),
+                            );
                             painter.rect_filled(h, 1.0, if on { HOVER } else { ACCENT });
                         }
                     }
                 }
                 if let Drag::Drawing { start, current } = *drag {
-                    let scr = ERect::from_two_pos(canvas.to_screen(start), canvas.to_screen(current));
-                    painter.rect_stroke(scr, 0.0, Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
+                    let scr =
+                        ERect::from_two_pos(canvas.to_screen(start), canvas.to_screen(current));
+                    painter.rect_stroke(
+                        scr,
+                        0.0,
+                        Stroke::new(1.5, ACCENT),
+                        egui::StrokeKind::Inside,
+                    );
                 }
                 edited
             },
@@ -666,17 +854,39 @@ impl DocView {
         &mut self,
         ui: &mut egui::Ui,
         model: &mut impl PageModel,
-        current_page: &mut usize,
+        state: &mut ViewState,
         extra_controls: impl FnOnce(&mut egui::Ui),
-    ) {
+    ) -> ViewOutput {
         self.show_page(
             ui,
             model,
-            current_page,
+            state,
             extra_controls,
             |_ui, _model, _drag, _resp, _canvas| false,
-        );
+        )
     }
+}
+
+fn zoom_mode_label(mode: ZoomMode) -> &'static str {
+    match mode {
+        ZoomMode::ActualSize => "Actual size",
+        ZoomMode::FitWidth => "Fit width",
+        ZoomMode::FitPage => "Fit page",
+        ZoomMode::Percent(_) => "Custom",
+    }
+}
+
+fn zoom_for_mode(mode: ZoomMode, page_size: Vec2, viewport_size: Vec2) -> f32 {
+    let fitted = match mode {
+        ZoomMode::ActualSize => 1.0,
+        ZoomMode::FitWidth if page_size.x > 0.0 => viewport_size.x / page_size.x,
+        ZoomMode::FitPage if page_size.x > 0.0 && page_size.y > 0.0 => {
+            (viewport_size.x / page_size.x).min(viewport_size.y / page_size.y)
+        }
+        ZoomMode::Percent(zoom) => zoom,
+        ZoomMode::FitWidth | ZoomMode::FitPage => 1.0,
+    };
+    fitted.clamp(MIN_ZOOM, MAX_ZOOM)
 }
 
 /// Current render scale (pixels per point) of a page's bitmap.
@@ -776,12 +986,52 @@ fn decide_drag(
                 .iter()
                 .find(|(rid, _)| *rid == id)
                 .expect("hover_target returned a live region");
-            Drag::Resizing { id, fixed: region_corners(r)[OPPOSITE[i]] }
+            Drag::Resizing {
+                id,
+                fixed: region_corners(r)[OPPOSITE[i]],
+            }
         }
         Hover::Body(id) => {
-            let (_, r) = regions.iter().find(|(rid, _)| *rid == id).expect("live region");
-            Drag::Moving { id, grab: egui::vec2(pp.x - r.x, pp.y - r.y) }
+            let (_, r) = regions
+                .iter()
+                .find(|(rid, _)| *rid == id)
+                .expect("live region");
+            Drag::Moving {
+                id,
+                grab: egui::vec2(pp.x - r.x, pp.y - r.y),
+            }
         }
-        Hover::None => Drag::Drawing { start: pp, current: pp },
+        Hover::None => Drag::Drawing {
+            start: pp,
+            current: pp,
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fit_modes_resolve_against_both_viewport_axes() {
+        let page = egui::vec2(600.0, 800.0);
+        let viewport = egui::vec2(300.0, 300.0);
+        assert_eq!(zoom_for_mode(ZoomMode::FitWidth, page, viewport), 0.5);
+        assert_eq!(zoom_for_mode(ZoomMode::FitPage, page, viewport), 0.375);
+        assert_eq!(zoom_for_mode(ZoomMode::ActualSize, page, viewport), 1.0);
+    }
+
+    #[test]
+    fn render_scale_reaches_six_without_aliasing() {
+        assert_eq!(render_scale_for(3.0, 2.0), 6.0);
+        assert_eq!(render_scale_for(4.0, 2.0), 6.0);
+    }
+
+    #[test]
+    fn navigation_clamps_normalized_anchor() {
+        let mut state = ViewState::default();
+        state.navigate_to(4, 1.5);
+        assert_eq!(state.page_index, 4);
+        assert_eq!(state.viewport_anchor.y, 1.0);
     }
 }

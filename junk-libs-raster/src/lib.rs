@@ -39,9 +39,14 @@ pub fn sample_background(img: &RgbaImage, rect: PixelRect) -> Rgba<u8> {
         sample(rect.x - 1, y);
         sample(rect.x + rect.w, y);
     }
-    if n == 0 {
-        Rgba([255, 255, 255, 255])
-    } else {
-        Rgba([(r / n) as u8, (g / n) as u8, (b / n) as u8, 255])
-    }
+    let Some(red) = r.checked_div(n) else {
+        return Rgba([255, 255, 255, 255]);
+    };
+    let green = g
+        .checked_div(n)
+        .expect("the shared sample count is nonzero");
+    let blue = b
+        .checked_div(n)
+        .expect("the shared sample count is nonzero");
+    Rgba([red as u8, green as u8, blue as u8, 255])
 }
