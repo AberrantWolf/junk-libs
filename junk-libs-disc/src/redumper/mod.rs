@@ -12,14 +12,15 @@
 //! - [`parse_log`] — parses a redumper log into [`RedumperLog`].
 //! - [`parse_cdtext`] — parses a binary CD-TEXT dump into [`CdText`].
 //!
-//! Everything here is pure parsing — no domain types from phono-junk or
-//! retro-junk leak in. Both workspaces consume the output.
+//! `pcm` additionally provides bounded, seekable raw audio playback. No domain
+//! types from phono-junk or retro-junk leak in. See PLAYBACK.md for its contract.
 //!
 //! Upstream reference: redumper project, <https://github.com/superg/redumper>.
 //! CD-TEXT format: IEC 60908 (Red Book) annex and Sony/Philips CD-TEXT spec.
 
 pub mod cdtext;
 pub mod log;
+pub mod pcm;
 pub mod sidecars;
 
 pub use cdtext::{CdText, CdTextBlock, CdTextTrack, parse_cdtext, parse_cdtext_bytes};

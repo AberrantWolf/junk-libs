@@ -14,6 +14,7 @@
 
 pub mod chd;
 pub mod cue;
+pub mod cue_audio;
 pub mod format;
 pub mod iso9660;
 pub mod layout;
