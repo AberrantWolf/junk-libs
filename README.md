@@ -16,7 +16,9 @@ Reusable building blocks that carry no app-specific semantics: CD image parsing,
   frames. Optional `decode-wav` provides qualified PCM-WAV decoding and exact
   frame seeking; optional `disc-readers` adapts already-open CUE and redumper
   readers without owning path policy. Compressed codecs, resampling, and DSP are
-  not yet implemented.
+  not yet implemented. Optional `resample` provides bounded streaming sinc
+  resampling with exact final length; qualified gain and hard-clipping primitives
+  are dependency-free.
 - **`junk-libs-disc`** — CD-ROM / optical disc parsing. CUE sheet parser (standard + CDRWin compatibility), CHD reader, ISO 9660 filesystem, CD sector constants, format detection.
 - **`junk-libs-disc-id`** — Neutral audio-CD TOC coordinates plus MusicBrainz,
   FreeDB/CDDB, and AccurateRip identifier calculation. Published MusicBrainz,
@@ -28,9 +30,9 @@ Reusable building blocks that carry no app-specific semantics: CD image parsing,
   in consumers.
 - **`junk-libs-pdfium`** — GUI-agnostic PDFium render core: rasterize PDF pages to RGBA and extract the text layer as per-character boxes. Its `build.rs` vendors the matching PDFium binary automatically (downloads from bblanchon/pdfium-binaries into `OUT_DIR`), so consumers need no manual setup; bind once per process via `instance()`. Shared by print-junk and expat-junk.
 - **`junk-libs-platen`** — Engine-agnostic successor to `junk-libs-pdfium`: same render API (RGBA page bitmaps, per-character text boxes) with the engine behind a feature flag — `backend-hayro` (default, pure Rust, nothing to download or bundle, parallel rendering) or `backend-pdfium` (legacy, kept for A/B comparison during migration). See its SPEC.md.
-- **`junk-libs-playback`** — Opaque consumer queue keys, generations, and
-  track-local integer-frame positions. Queue transitions land only with their
-  executable child.
+- **`junk-libs-playback`** — Opaque consumer queue keys, generations, track-local
+  integer-frame positions, deterministic queue transitions, and generation-fenced
+  seeking. It contains no GUI, audio device, or product identifiers.
 
 ## Build
 

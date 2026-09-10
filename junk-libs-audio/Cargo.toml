@@ -8,12 +8,14 @@ license.workspace = true
 default = []
 decode-wav = ["dep:symphonia"]
 disc-readers = ["dep:junk-libs-disc"]
+resample = ["dep:rubato"]
 
 [dependencies]
 junk-libs-core.workspace = true
 junk-libs-disc = { workspace = true, optional = true }
 thiserror.workspace = true
 symphonia = { version = "0.5.5", default-features = false, features = ["pcm", "wav"], optional = true }
+rubato = { version = "0.16.2", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

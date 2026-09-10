@@ -22,6 +22,15 @@ mod disc;
 #[cfg(feature = "disc-readers")]
 pub use disc::{CuePcmDecoder, DiscDecodeError, RedumperPcmChunk, RedumperPcmDecoder};
 
+mod dsp;
+pub use dsp::{DspError, apply_gain, hard_clip};
+
+#[cfg(feature = "resample")]
+mod resample;
+
+#[cfg(feature = "resample")]
+pub use resample::{ResampleError, SincResampler};
+
 pub trait AudioReadSeek: Read + Seek + Send {}
 
 impl<T: Read + Seek + Send> AudioReadSeek for T {}
