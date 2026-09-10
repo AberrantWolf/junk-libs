@@ -5,6 +5,7 @@ members = [
     "junk-libs-accuraterip",
     "junk-libs-disc",
     "junk-libs-disc-id",
+    "junk-libs-dat",
     "junk-libs-pdfium",
     "junk-libs-platen",
     "junk-libs-raster",
@@ -22,6 +23,7 @@ junk-libs-core = { path = "junk-libs-core" }
 junk-libs-accuraterip = { path = "junk-libs-accuraterip" }
 junk-libs-disc = { path = "junk-libs-disc" }
 junk-libs-disc-id = { path = "junk-libs-disc-id" }
+junk-libs-dat = { path = "junk-libs-dat" }
 junk-libs-pdfium = { path = "junk-libs-pdfium" }
 junk-libs-platen = { path = "junk-libs-platen" }
 junk-libs-raster = { path = "junk-libs-raster" }
@@ -38,5 +40,6 @@ md5 = "0.7"
 base64 = "0.22"
 chd = "0.3"
 log = { version = "0.4", features = ["std"] }
+quick-xml = "0.37"
 lopdf = { version = "0.40", default-features = false }
 tempfile = "3"

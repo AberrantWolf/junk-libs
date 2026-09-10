@@ -16,6 +16,10 @@ Reusable building blocks that carry no app-specific semantics: CD image parsing,
   FreeDB/CDDB, and AccurateRip identifier calculation. Published MusicBrainz,
   libdiscid, and ARver vectors gate the algorithms; provider/network policy stays
   in consumers.
+- **`junk-libs-dat`** — Streaming, catalog-neutral Logiqx XML and ClrMamePro
+  DAT parsing with normalized checksums and optional serial/region/version/category
+  observations. Downloading, caching, matching, naming, and platform policy stay
+  in consumers.
 - **`junk-libs-pdfium`** — GUI-agnostic PDFium render core: rasterize PDF pages to RGBA and extract the text layer as per-character boxes. Its `build.rs` vendors the matching PDFium binary automatically (downloads from bblanchon/pdfium-binaries into `OUT_DIR`), so consumers need no manual setup; bind once per process via `instance()`. Shared by print-junk and expat-junk.
 - **`junk-libs-platen`** — Engine-agnostic successor to `junk-libs-pdfium`: same render API (RGBA page bitmaps, per-character text boxes) with the engine behind a feature flag — `backend-hayro` (default, pure Rust, nothing to download or bundle, parallel rendering) or `backend-pdfium` (legacy, kept for A/B comparison during migration). See its SPEC.md.
 
@@ -36,6 +40,7 @@ junk-libs-core = { git = "https://github.com/AberrantWolf/junk-libs" }
 junk-libs-accuraterip = { git = "https://github.com/AberrantWolf/junk-libs" }
 junk-libs-disc = { git = "https://github.com/AberrantWolf/junk-libs" }
 junk-libs-disc-id = { git = "https://github.com/AberrantWolf/junk-libs" }
+junk-libs-dat = { git = "https://github.com/AberrantWolf/junk-libs" }
 ```
 
 For faster local iteration when developing against junk-libs, override with a path dep via Cargo's `[patch]` section in the consuming workspace's root `Cargo.toml`:
@@ -46,6 +51,7 @@ junk-libs-core = { path = "../junk-libs/junk-libs-core" }
 junk-libs-accuraterip = { path = "../junk-libs/junk-libs-accuraterip" }
 junk-libs-disc = { path = "../junk-libs/junk-libs-disc" }
 junk-libs-disc-id = { path = "../junk-libs/junk-libs-disc-id" }
+junk-libs-dat = { path = "../junk-libs/junk-libs-dat" }
 ```
 
 This requires `junk-libs` to be cloned as a sibling directory. Cargo errors if the path doesn't exist, so either clone both repos side-by-side or leave the patch lines commented out.
