@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 
 use junk_libs_core::AnalysisError;
 
-use crate::layout::{LEAD_IN_FRAMES, TrackLayout, classify_mode};
+use crate::layout::{LEAD_IN_FRAMES, TrackKind, TrackLayout, classify_mode};
 
 /// A parsed CUE sheet.
 #[derive(Debug, Clone)]
@@ -28,6 +28,12 @@ pub struct CueTrack {
     pub number: u8,
     pub mode: String,
     pub indexes: Vec<CueIndex>,
+    /// Gap frames declared by `PREGAP`; these bytes are synthesized by a
+    /// player/converter and are not part of the referenced source file.
+    pub pregap_frames: u32,
+    /// Gap frames declared by `POSTGAP`; these bytes are synthesized by a
+    /// player/converter and are not part of the referenced source file.
+    pub postgap_frames: u32,
 }
 
 /// An INDEX entry in a CUE sheet track.
@@ -119,6 +125,8 @@ pub fn parse_cue(content: &str) -> Result<CueSheet, AnalysisError> {
                 number,
                 mode,
                 indexes: Vec::new(),
+                pregap_frames: 0,
+                postgap_frames: 0,
             };
             if let Some(ref mut f) = current_file {
                 f.tracks.push(track);
@@ -140,8 +148,27 @@ pub fn parse_cue(content: &str) -> Result<CueSheet, AnalysisError> {
                     "INDEX directive with no current TRACK: {line}"
                 )));
             }
+        } else if matches!(keyword.as_str(), "PREGAP" | "POSTGAP") {
+            let (minutes, seconds, frames) = parse_msf(rest)?;
+            let gap_frames = ((minutes * 60 + seconds) * 75)
+                .checked_add(frames)
+                .ok_or_else(|| AnalysisError::invalid_format("CUE gap length overflow"))?;
+            let current = current_file
+                .as_mut()
+                .and_then(|file| file.tracks.last_mut())
+                .or_else(|| pending_tracks.last_mut())
+                .ok_or_else(|| {
+                    AnalysisError::invalid_format(format!(
+                        "{keyword} directive with no current TRACK: {line}"
+                    ))
+                })?;
+            if keyword == "PREGAP" {
+                current.pregap_frames = gap_frames;
+            } else {
+                current.postgap_frames = gap_frames;
+            }
         }
-        // Ignore PREGAP, POSTGAP, REM, CD_ROM_XA, NO COPY, etc.
+        // Ignore REM, CD_ROM_XA, NO COPY, etc.
     }
 
     if let Some(f) = current_file.take() {
@@ -811,6 +838,112 @@ impl CueSourceFile {
 pub struct CueResolvedLayout {
     pub tracks: Vec<TrackLayout>,
     pub files: Vec<CueSourceFile>,
+}
+
+/// One complete stored track span in a CUE source file.
+///
+/// `byte_offset` and `byte_len` are file-byte coordinates. An in-file
+/// `INDEX 00` is owned by its track and therefore starts the span. Synthetic
+/// `PREGAP`/`POSTGAP` frames are metadata only and never expand this byte span.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CueTrackSpan {
+    pub track_number: u8,
+    pub kind: TrackKind,
+    pub mode: String,
+    pub filename: String,
+    pub byte_offset: u64,
+    pub byte_len: u64,
+    pub synthetic_pregap_frames: u32,
+    pub synthetic_postgap_frames: u32,
+}
+
+/// Compute ordered, non-overlapping file-byte spans for every CUE track.
+///
+/// Spans tile every referenced file. Within a file, a track begins at its
+/// earliest INDEX (`00` when stored, otherwise `01`); the first track owns
+/// any bytes preceding its first index. Track numbers must be globally
+/// increasing and each file must use one unambiguous stored frame size.
+pub fn compute_cue_track_spans(
+    sheet: &CueSheet,
+    bin_size: impl Fn(&str) -> Result<u64, AnalysisError>,
+) -> Result<Vec<CueTrackSpan>, AnalysisError> {
+    let mut spans = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut previous = None;
+
+    for file in &sheet.files {
+        let first = file.tracks.first().ok_or_else(|| {
+            AnalysisError::invalid_format(format!(
+                "CUE FILE '{}' has no TRACK entries",
+                file.filename
+            ))
+        })?;
+        let frame_bytes = checked_sector_size_for_mode(&first.mode)?;
+        for track in &file.tracks {
+            if checked_sector_size_for_mode(&track.mode)? != frame_bytes {
+                return Err(AnalysisError::unsupported(format!(
+                    "CUE FILE '{}' mixes stored frame sizes",
+                    file.filename
+                )));
+            }
+            if !seen.insert(track.number) || previous.is_some_and(|number| track.number <= number) {
+                return Err(AnalysisError::invalid_format(
+                    "CUE track numbers are duplicated or not strictly increasing",
+                ));
+            }
+            previous = Some(track.number);
+        }
+
+        let file_bytes = bin_size(&file.filename)?;
+        if file_bytes == 0 || !file_bytes.is_multiple_of(frame_bytes) {
+            return Err(AnalysisError::invalid_format(format!(
+                "CUE FILE '{}' length {file_bytes} is not aligned to its {frame_bytes}-byte frames",
+                file.filename
+            )));
+        }
+        let mut starts = file
+            .tracks
+            .iter()
+            .map(|track| {
+                track
+                    .indexes
+                    .iter()
+                    .min_by_key(|index| index.number)
+                    .map(CueIndex::to_sector_offset)
+                    .and_then(|frames| frames.checked_mul(frame_bytes))
+                    .ok_or_else(|| {
+                        AnalysisError::invalid_format(format!(
+                            "CUE TRACK {:02} has no usable INDEX",
+                            track.number
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        starts[0] = 0;
+
+        for (index, track) in file.tracks.iter().enumerate() {
+            let start = starts[index];
+            let end = starts.get(index + 1).copied().unwrap_or(file_bytes);
+            if start >= end || end > file_bytes {
+                return Err(AnalysisError::invalid_format(format!(
+                    "CUE TRACK {:02} has invalid file-byte span {start}..{end}",
+                    track.number
+                )));
+            }
+            spans.push(CueTrackSpan {
+                track_number: track.number,
+                kind: classify_mode(&track.mode),
+                mode: track.mode.clone(),
+                filename: file.filename.clone(),
+                byte_offset: start,
+                byte_len: end - start,
+                synthetic_pregap_frames: track.pregap_frames,
+                synthetic_postgap_frames: track.postgap_frames,
+            });
+        }
+    }
+
+    Ok(spans)
 }
 
 pub fn compute_cue_resolved_layout(

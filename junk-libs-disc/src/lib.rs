@@ -26,11 +26,15 @@ pub mod sector;
 #[path = "tests/layout_tests.rs"]
 mod layout_tests;
 
-pub use chd::{compute_chd_layout, read_chd_layout, read_chd_raw_sector};
+pub use chd::{
+    ChdTrackFrameVisitor, ChdTrackInfo, RawCdFrame, compute_chd_layout, read_chd_layout,
+    read_chd_raw_sector, read_chd_track_info, visit_chd_raw_tracks,
+};
 pub use cue::{
     CueCompatReport, CueFile, CueIndex, CueResolvedLayout, CueSheet, CueSourceFile, CueTrack,
-    check_cue_compat, checked_sector_size_for_mode, compute_cue_layout,
-    compute_cue_resolved_layout, convert_cue_to_standard, read_cue_layout, resolve_local_file,
+    CueTrackSpan, check_cue_compat, checked_sector_size_for_mode, compute_cue_layout,
+    compute_cue_resolved_layout, compute_cue_track_spans, convert_cue_to_standard, read_cue_layout,
+    resolve_local_file,
 };
 pub use format::{DiscFormat, detect_disc_format};
 pub use iso9660::{DirectoryRecord, PrimaryVolumeDescriptor, find_file_in_root, read_pvd};

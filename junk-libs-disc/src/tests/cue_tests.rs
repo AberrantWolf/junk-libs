@@ -210,6 +210,63 @@ fn resolve_local_file_rejects_directory_escape() {
     );
 }
 
+#[test]
+fn ordered_track_spans_own_stored_pregap_and_cover_multifile_bytes() {
+    let sheet = parse_cue(
+        "FILE \"disc.bin\" BINARY\n\
+         TRACK 01 MODE1/2352\n\
+         INDEX 01 00:00:00\n\
+         TRACK 02 AUDIO\n\
+         INDEX 00 00:00:02\n\
+         INDEX 01 00:00:03\n\
+         FILE \"disc-03.bin\" BINARY\n\
+         TRACK 03 AUDIO\n\
+         INDEX 01 00:00:00\n",
+    )
+    .unwrap();
+    let spans = compute_cue_track_spans(&sheet, |name| match name {
+        "disc.bin" => Ok(5 * 2352),
+        "disc-03.bin" => Ok(4 * 2352),
+        _ => unreachable!(),
+    })
+    .unwrap();
+
+    assert_eq!(spans.len(), 3);
+    assert_eq!((spans[0].byte_offset, spans[0].byte_len), (0, 2 * 2352));
+    assert_eq!(
+        (spans[1].byte_offset, spans[1].byte_len),
+        (2 * 2352, 3 * 2352)
+    );
+    assert_eq!((spans[2].byte_offset, spans[2].byte_len), (0, 4 * 2352));
+    assert_eq!(spans[1].kind, crate::layout::TrackKind::Audio);
+}
+
+#[test]
+fn ordered_track_spans_support_cooked_frames_and_fail_closed() {
+    let cooked =
+        parse_cue("FILE \"disc.iso\" BINARY\nTRACK 01 MODE1/2048\nINDEX 01 00:00:00\n").unwrap();
+    let spans = compute_cue_track_spans(&cooked, |_| Ok(3 * 2048)).unwrap();
+    assert_eq!(spans[0].byte_len, 3 * 2048);
+
+    let synthetic = parse_cue(
+        "FILE \"disc.bin\" BINARY\nTRACK 01 MODE1/2352\nPREGAP 00:02:00\n\
+         INDEX 01 00:00:00\nPOSTGAP 00:01:00\n",
+    )
+    .unwrap();
+    let spans = compute_cue_track_spans(&synthetic, |_| Ok(2352)).unwrap();
+    assert_eq!(spans[0].byte_len, 2352);
+    assert_eq!(spans[0].synthetic_pregap_frames, 150);
+    assert_eq!(spans[0].synthetic_postgap_frames, 75);
+
+    let duplicate = parse_cue(
+        "FILE \"a.bin\" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\n\
+         FILE \"b.bin\" BINARY\nTRACK 01 AUDIO\nINDEX 01 00:00:00\n",
+    )
+    .unwrap();
+    assert!(compute_cue_track_spans(&duplicate, |_| Ok(2352)).is_err());
+    assert!(compute_cue_track_spans(&cooked, |_| Ok(2049)).is_err());
+}
+
 // -- CUE compatibility detection tests --
 
 #[test]

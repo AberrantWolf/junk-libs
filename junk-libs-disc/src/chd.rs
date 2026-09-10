@@ -345,6 +345,13 @@ pub struct ChdTrackInfo {
     pub start_sector: usize,
 }
 
+/// One raw CD main-channel frame, excluding any CHD subchannel tail.
+pub type RawCdFrame = [u8; RAW_SECTOR_SIZE as usize];
+
+/// Callback used by [`visit_chd_raw_tracks`] for each owned track frame.
+pub type ChdTrackFrameVisitor<'a> =
+    dyn FnMut(&ChdTrackInfo, &RawCdFrame) -> Result<(), AnalysisError> + 'a;
+
 impl ChdTrackInfo {
     /// Returns true if this is a data track (MODE1 or MODE2, not AUDIO).
     pub fn is_data(&self) -> bool {
@@ -407,6 +414,87 @@ pub fn parse_chd_tracks<F: std::io::Read + std::io::Seek>(
             .ok_or_else(|| AnalysisError::corrupted_header("CHD track offset overflow"))?;
     }
 
+    Ok(tracks)
+}
+
+/// Visit the raw 2352-byte main-channel frames of every declared CD track.
+///
+/// Tracks are visited in track-number order. CHD four-frame alignment padding
+/// and the per-frame subchannel tail are excluded. The callback receives byte
+/// representation and ownership only; hashing and catalog policy remain with
+/// the consumer.
+pub fn visit_chd_raw_tracks(
+    reader: &mut dyn junk_libs_core::ReadSeek,
+    visitor: &mut ChdTrackFrameVisitor<'_>,
+) -> Result<Vec<ChdTrackInfo>, AnalysisError> {
+    reader.seek(SeekFrom::Start(0))?;
+    let (tracks, logical_frames) = {
+        let mut chd = chd::Chd::open(&mut *reader, None)
+            .map_err(|error| AnalysisError::other(format!("Failed to open CHD: {error}")))?;
+        if u64::from(chd.header().unit_bytes()) < RAW_SECTOR_SIZE {
+            return Err(AnalysisError::invalid_format(
+                "DVD CHD has no ordered raw CD track set",
+            ));
+        }
+        let unit_bytes = u64::from(chd.header().unit_bytes());
+        let logical_bytes = chd.header().logical_bytes();
+        if unit_bytes == 0 || !logical_bytes.is_multiple_of(unit_bytes) {
+            return Err(AnalysisError::corrupted_header(
+                "CHD logical size is not an integral number of frames",
+            ));
+        }
+        (parse_chd_tracks(&mut chd)?, logical_bytes / unit_bytes)
+    };
+    if tracks.is_empty() {
+        return Err(AnalysisError::invalid_format(
+            "CD CHD contains no track metadata",
+        ));
+    }
+    let declared_end = tracks
+        .last()
+        .and_then(|track| track.start_sector.checked_add(track.frames))
+        .and_then(|end| u64::try_from(end).ok())
+        .ok_or_else(|| AnalysisError::corrupted_header("CHD track range overflow"))?;
+    if declared_end > logical_frames {
+        return Err(AnalysisError::corrupted_header(
+            "CHD track metadata extends beyond the logical stream",
+        ));
+    }
+
+    reader.seek(SeekFrom::Start(0))?;
+    let mut cache = ChdHunkCache::open(&mut *reader)?;
+    for track in &tracks {
+        for frame in 0..track.frames {
+            let sector = track
+                .start_sector
+                .checked_add(frame)
+                .and_then(|sector| u64::try_from(sector).ok())
+                .ok_or_else(|| AnalysisError::corrupted_header("CHD frame offset overflow"))?;
+            let raw = cache.read_raw_sector(sector)?;
+            visitor(track, &raw)?;
+        }
+    }
+    Ok(tracks)
+}
+
+/// Inspect the ordered CD-track metadata without reading track payload bytes.
+pub fn read_chd_track_info(
+    reader: &mut dyn junk_libs_core::ReadSeek,
+) -> Result<Vec<ChdTrackInfo>, AnalysisError> {
+    reader.seek(SeekFrom::Start(0))?;
+    let mut chd = chd::Chd::open(reader, None)
+        .map_err(|error| AnalysisError::other(format!("Failed to open CHD: {error}")))?;
+    if u64::from(chd.header().unit_bytes()) < RAW_SECTOR_SIZE {
+        return Err(AnalysisError::invalid_format(
+            "DVD CHD has no ordered raw CD track set",
+        ));
+    }
+    let tracks = parse_chd_tracks(&mut chd)?;
+    if tracks.is_empty() {
+        return Err(AnalysisError::invalid_format(
+            "CD CHD contains no track metadata",
+        ));
+    }
     Ok(tracks)
 }
 

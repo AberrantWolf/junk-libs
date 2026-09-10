@@ -26,6 +26,7 @@ impl<'a> MultiHasher<'a> {
     ///
     /// `data_size` is used for progress reporting (the "total" in the callback).
     /// Pass 0 if the total size is unknown.
+    #[must_use]
     pub fn new(
         algorithms: HashAlgorithms,
         data_size: u64,
@@ -90,6 +91,7 @@ impl<'a> MultiHasher<'a> {
     }
 
     /// Finalize all hashers and return the computed hashes.
+    #[must_use]
     pub fn finalize(self) -> FileHashes {
         FileHashes {
             crc32: self
@@ -101,5 +103,31 @@ impl<'a> MultiHasher<'a> {
             data_size: self.data_size,
             warnings: vec![],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn published_check_vector_is_stable_across_chunk_boundaries() {
+        let progress = std::cell::Cell::new((0, 0));
+        let report = |done, total| progress.set((done, total));
+        let mut hasher = MultiHasher::new(HashAlgorithms::All, 9, Some(&report));
+        hasher.update_with_progress(b"123");
+        hasher.update_with_progress(b"456789");
+        let result = hasher.finalize();
+
+        assert_eq!(result.crc32, "cbf43926");
+        assert_eq!(
+            result.md5.as_deref(),
+            Some("25f9e794323b453885f5181f1b624d0b")
+        );
+        assert_eq!(
+            result.sha1.as_deref(),
+            Some("f7c3bc1d808e04732adf679965ccc34ca7ae3441")
+        );
+        assert_eq!(progress.get(), (9, 9));
     }
 }
