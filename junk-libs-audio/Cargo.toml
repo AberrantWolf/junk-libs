@@ -4,6 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+decode-wav = ["dep:symphonia"]
+disc-readers = ["dep:junk-libs-disc"]
+
 [dependencies]
 junk-libs-core.workspace = true
+junk-libs-disc = { workspace = true, optional = true }
 thiserror.workspace = true
+symphonia = { version = "0.5.5", default-features = false, features = ["pcm", "wav"], optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true

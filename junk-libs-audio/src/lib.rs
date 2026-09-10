@@ -10,6 +10,18 @@ use std::{
 
 use thiserror::Error;
 
+#[cfg(feature = "decode-wav")]
+mod wav;
+
+#[cfg(feature = "decode-wav")]
+pub use wav::{AudioDecodeError, WavDecoder};
+
+#[cfg(feature = "disc-readers")]
+mod disc;
+
+#[cfg(feature = "disc-readers")]
+pub use disc::{CuePcmDecoder, DiscDecodeError, RedumperPcmChunk, RedumperPcmDecoder};
+
 pub trait AudioReadSeek: Read + Seek + Send {}
 
 impl<T: Read + Seek + Send> AudioReadSeek for T {}
@@ -132,4 +144,86 @@ pub enum AudioContractError {
     ZeroChannels,
     #[error("{samples} interleaved samples do not form complete {channels}-channel frames")]
     IncompleteFrame { samples: usize, channels: u16 },
+}
+
+#[cfg(all(test, feature = "decode-wav"))]
+mod decoder_contract_tests {
+    use std::io::Cursor;
+
+    use super::{ByteSource, FramePosition, MediaHint, WavDecoder};
+
+    fn stereo_wav(frames: &[[i16; 2]], sample_rate: u32) -> Vec<u8> {
+        let data_len = (frames.len() * 4) as u32;
+        let mut bytes = Vec::with_capacity(44 + data_len as usize);
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&2_u16.to_le_bytes());
+        bytes.extend_from_slice(&sample_rate.to_le_bytes());
+        bytes.extend_from_slice(&(sample_rate * 4).to_le_bytes());
+        bytes.extend_from_slice(&4_u16.to_le_bytes());
+        bytes.extend_from_slice(&16_u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_len.to_le_bytes());
+        for frame in frames {
+            bytes.extend_from_slice(&frame[0].to_le_bytes());
+            bytes.extend_from_slice(&frame[1].to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn wav_decode_and_seek_use_exact_track_local_frames() {
+        let frames = (0..32)
+            .map(|frame| [frame * 100, -(frame * 100)])
+            .collect::<Vec<_>>();
+        let bytes = stereo_wav(&frames, 8_000);
+        let source = ByteSource::new(
+            Cursor::new(bytes.clone()),
+            MediaHint::new(Some(bytes.len() as u64), Some("wav"), Some("audio/wav")),
+        );
+
+        let mut decoder = WavDecoder::open(source).expect("open WAV");
+        assert_eq!(decoder.format().sample_rate(), 8_000);
+        assert_eq!(decoder.format().channels(), 2);
+        assert_eq!(decoder.total_frames(), Some(32));
+
+        let first = decoder.read_frames(3).expect("decode").expect("frames");
+        assert_eq!(first.start_frame, FramePosition(0));
+        assert_eq!(first.frame_count(), 3);
+
+        decoder
+            .seek_exact(FramePosition(17))
+            .expect("exact frame seek");
+        assert_eq!(decoder.position(), FramePosition(17));
+        let sought = decoder.read_frames(2).expect("decode").expect("frames");
+        assert_eq!(sought.start_frame, FramePosition(17));
+        assert!((sought.samples[0] - (1_700.0 / 32_768.0)).abs() < 0.000_001);
+        assert!((sought.samples[1] - (-1_700.0 / 32_768.0)).abs() < 0.000_001);
+
+        decoder
+            .seek_exact(FramePosition(32))
+            .expect("exact EOF seek");
+        assert!(decoder.read_frames(1).expect("read EOF").is_none());
+    }
+
+    #[test]
+    fn decoder_rejects_non_wav_and_out_of_range_or_empty_requests() {
+        let bytes = stereo_wav(&[[1, -1]; 4], 44_100);
+        let source = ByteSource::new(
+            Cursor::new(bytes.clone()),
+            MediaHint::new(Some(bytes.len() as u64), Some("mp3"), Some("audio/mpeg")),
+        );
+        assert!(WavDecoder::open(source).is_err());
+
+        let source = ByteSource::new(
+            Cursor::new(bytes),
+            MediaHint::new(None, Some("wav"), Some("audio/wav")),
+        );
+        let mut decoder = WavDecoder::open(source).expect("open WAV");
+        assert!(decoder.read_frames(0).is_err());
+        assert!(decoder.seek_exact(FramePosition(5)).is_err());
+    }
 }

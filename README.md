@@ -13,7 +13,10 @@ Reusable building blocks that carry no app-specific semantics: CD image parsing,
   in consumers.
 - **`junk-libs-audio`** — Opaque `Read + Seek + Send` byte sources with length/
   media hints and validated interleaved-`f32` PCM chunks addressed in integer
-  frames. Decode, resampling, and DSP land only with their executable children.
+  frames. Optional `decode-wav` provides qualified PCM-WAV decoding and exact
+  frame seeking; optional `disc-readers` adapts already-open CUE and redumper
+  readers without owning path policy. Compressed codecs, resampling, and DSP are
+  not yet implemented.
 - **`junk-libs-disc`** — CD-ROM / optical disc parsing. CUE sheet parser (standard + CDRWin compatibility), CHD reader, ISO 9660 filesystem, CD sector constants, format detection.
 - **`junk-libs-disc-id`** — Neutral audio-CD TOC coordinates plus MusicBrainz,
   FreeDB/CDDB, and AccurateRip identifier calculation. Published MusicBrainz,
