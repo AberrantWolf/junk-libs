@@ -3,11 +3,13 @@ resolver = "2"
 members = [
     "junk-libs-core",
     "junk-libs-accuraterip",
+    "junk-libs-audio",
     "junk-libs-disc",
     "junk-libs-disc-id",
     "junk-libs-dat",
     "junk-libs-pdfium",
     "junk-libs-platen",
+    "junk-libs-playback",
     "junk-libs-raster",
     "junk-libs-egui-docview",
     "junk-libs-egui-pdfdoc",
@@ -21,11 +23,13 @@ license = "MIT"
 [workspace.dependencies]
 junk-libs-core = { path = "junk-libs-core" }
 junk-libs-accuraterip = { path = "junk-libs-accuraterip" }
+junk-libs-audio = { path = "junk-libs-audio" }
 junk-libs-disc = { path = "junk-libs-disc" }
 junk-libs-disc-id = { path = "junk-libs-disc-id" }
 junk-libs-dat = { path = "junk-libs-dat" }
 junk-libs-pdfium = { path = "junk-libs-pdfium" }
 junk-libs-platen = { path = "junk-libs-platen" }
+junk-libs-playback = { path = "junk-libs-playback" }
 junk-libs-raster = { path = "junk-libs-raster" }
 junk-libs-egui-docview = { path = "junk-libs-egui-docview" }
 junk-libs-egui-pdfdoc = { path = "junk-libs-egui-pdfdoc" }

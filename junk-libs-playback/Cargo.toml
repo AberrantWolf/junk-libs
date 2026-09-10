@@ -1,0 +1,8 @@
+[package]
+name = "junk-libs-playback"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
