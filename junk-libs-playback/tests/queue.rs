@@ -43,6 +43,20 @@ fn append_after_exhaustion_resumes_at_the_new_track() {
 }
 
 #[test]
+fn adapter_state_restores_without_changing_generation() {
+    let queue = QueueState::restore(
+        vec![QueueTrack::new("audible", 100)],
+        Some(0),
+        40,
+        Generation(9),
+    )
+    .unwrap();
+    assert_eq!(queue.generation(), Generation(9));
+    assert_eq!(queue.snapshot().position.unwrap().frame, 40);
+    assert!(QueueState::restore(vec![QueueTrack::new("x", 1)], None, 1, Generation(0)).is_err());
+}
+
+#[test]
 fn replace_and_bounds_fail_without_partial_mutation() {
     let mut queue = QueueState::new();
     assert!(queue.replace(vec![], 0).is_err());

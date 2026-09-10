@@ -92,6 +92,36 @@ impl<K: Clone> QueueState<K> {
         Self::default()
     }
 
+    pub fn restore(
+        tracks: Vec<QueueTrack<K>>,
+        current: Option<usize>,
+        frame: u64,
+        generation: Generation,
+    ) -> Result<Self, PlaybackCommandError> {
+        if let Some(current) = current {
+            let track = tracks
+                .get(current)
+                .ok_or(PlaybackCommandError::StartOutOfRange {
+                    start: current,
+                    tracks: tracks.len(),
+                })?;
+            if frame > track.total_frames {
+                return Err(PlaybackCommandError::FrameOutOfRange {
+                    frame,
+                    total_frames: track.total_frames,
+                });
+            }
+        } else if frame != 0 {
+            return Err(PlaybackCommandError::PositionWithoutTrack { frame });
+        }
+        Ok(Self {
+            tracks,
+            current,
+            frame,
+            generation,
+        })
+    }
+
     #[must_use]
     pub fn generation(&self) -> Generation {
         self.generation
@@ -230,6 +260,8 @@ pub enum PlaybackCommandError {
     TruncateOutOfRange { requested: usize, tracks: usize },
     #[error("queue has no current track")]
     NoCurrentTrack,
+    #[error("frame {frame} cannot be restored without a current track")]
+    PositionWithoutTrack { frame: u64 },
     #[error("seek generation {expected:?} is stale; current generation is {actual:?}")]
     StaleGeneration {
         expected: Generation,
