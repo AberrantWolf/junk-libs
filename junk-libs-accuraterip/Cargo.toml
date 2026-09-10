@@ -1,0 +1,9 @@
+[package]
+name = "junk-libs-accuraterip"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+junk-libs-core.workspace = true
+thiserror.workspace = true

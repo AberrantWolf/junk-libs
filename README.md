@@ -7,6 +7,10 @@ Reusable building blocks that carry no app-specific semantics: CD image parsing,
 ## Crates
 
 - **`junk-libs-core`** — Generic types. `AnalysisError` (thiserror), `MultiHasher` (streaming CRC32/SHA1/MD5), `ChecksumAlgorithm` / `ExpectedChecksum`, multi-disc filename grouping utilities, `ReadSeek` trait alias, byte/ASCII helpers.
+- **`junk-libs-accuraterip`** — Headless AccurateRip CRC v1/v2, boundary skips,
+  dBAR parsing/validation, checksum matching, frame-450 evidence, and bounded
+  sample-offset search over packed integer CD PCM. Network/provider policy stays
+  in consumers.
 - **`junk-libs-disc`** — CD-ROM / optical disc parsing. CUE sheet parser (standard + CDRWin compatibility), CHD reader, ISO 9660 filesystem, CD sector constants, format detection.
 - **`junk-libs-disc-id`** — Neutral audio-CD TOC coordinates plus MusicBrainz,
   FreeDB/CDDB, and AccurateRip identifier calculation. Published MusicBrainz,
@@ -29,6 +33,7 @@ From another Cargo workspace, add via git dependency:
 ```toml
 [workspace.dependencies]
 junk-libs-core = { git = "https://github.com/AberrantWolf/junk-libs" }
+junk-libs-accuraterip = { git = "https://github.com/AberrantWolf/junk-libs" }
 junk-libs-disc = { git = "https://github.com/AberrantWolf/junk-libs" }
 junk-libs-disc-id = { git = "https://github.com/AberrantWolf/junk-libs" }
 ```
@@ -38,6 +43,7 @@ For faster local iteration when developing against junk-libs, override with a pa
 ```toml
 [patch."https://github.com/AberrantWolf/junk-libs"]
 junk-libs-core = { path = "../junk-libs/junk-libs-core" }
+junk-libs-accuraterip = { path = "../junk-libs/junk-libs-accuraterip" }
 junk-libs-disc = { path = "../junk-libs/junk-libs-disc" }
 junk-libs-disc-id = { path = "../junk-libs/junk-libs-disc-id" }
 ```
