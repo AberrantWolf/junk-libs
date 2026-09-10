@@ -21,13 +21,10 @@ const BOX_X_TOLERANCE: f32 = 2.0;
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     // --dump <dir>: write side-by-side PNGs for flagged pages.
-    let dump_dir = args
-        .iter()
-        .position(|a| a == "--dump")
-        .map(|i| {
-            args.remove(i);
-            std::path::PathBuf::from(args.remove(i))
-        });
+    let dump_dir = args.iter().position(|a| a == "--dump").map(|i| {
+        args.remove(i);
+        std::path::PathBuf::from(args.remove(i))
+    });
     if args.is_empty() {
         eprintln!("usage: ab_compare [--dump <dir>] <file.pdf> [more.pdf ...]");
         std::process::exit(2);
@@ -132,7 +129,9 @@ fn main() {
                 if let Some(d) = &dump_dir {
                     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
                     let _ = h.image.save(d.join(format!("{stem}-p{}-hayro.png", i + 1)));
-                    let _ = p.image.save(d.join(format!("{stem}-p{}-pdfium.png", i + 1)));
+                    let _ = p
+                        .image
+                        .save(d.join(format!("{stem}-p{}-pdfium.png", i + 1)));
                     let _ = std::fs::write(
                         d.join(format!("{stem}-p{}-text.txt", i + 1)),
                         format!("hayro : {h_text:?}\npdfium: {p_text:?}\n"),
@@ -150,7 +149,10 @@ fn main() {
         flagged += usize::from(doc_flagged);
     }
 
-    println!("\n{} file(s); {flagged} flagged, {errored} errored", args.len());
+    println!(
+        "\n{} file(s); {flagged} flagged, {errored} errored",
+        args.len()
+    );
     if flagged + errored > 0 {
         std::process::exit(1);
     }

@@ -172,7 +172,8 @@ impl Document {
         let scale_y = page.bitmap.height() as f32 / page.size.1;
         let x = (region.rect.x * scale_x).round().max(0.0) as u32;
         let y = (region.rect.y * scale_y).round().max(0.0) as u32;
-        let w = ((region.rect.w * scale_x).round() as u32).min(page.bitmap.width().saturating_sub(x));
+        let w =
+            ((region.rect.w * scale_x).round() as u32).min(page.bitmap.width().saturating_sub(x));
         let h =
             ((region.rect.h * scale_y).round() as u32).min(page.bitmap.height().saturating_sub(y));
         if w == 0 || h == 0 {
@@ -269,7 +270,15 @@ mod tests {
     }
 
     fn ch(c: char, x: f32, w: f32) -> (char, Rect) {
-        (c, Rect { x, y: 10.0, w, h: 10.0 })
+        (
+            c,
+            Rect {
+                x,
+                y: 10.0,
+                w,
+                h: 10.0,
+            },
+        )
     }
 
     #[test]

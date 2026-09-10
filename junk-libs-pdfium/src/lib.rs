@@ -72,9 +72,10 @@ fn bind() -> Result<Pdfium> {
 /// the executable, not the working directory, so it holds wherever the app is
 /// launched from. Empty if the executable path can't be determined.
 fn bundled_lib_dirs() -> Vec<PathBuf> {
-    let Some(dir) = std::env::current_exe().ok().and_then(|exe| {
-        exe.parent().map(Path::to_path_buf)
-    }) else {
+    let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+    else {
         return Vec::new();
     };
     vec![dir.join("../lib"), dir.join("../Frameworks"), dir]
@@ -299,8 +300,7 @@ mod tests {
             page.size_pts
         );
         assert!(
-            (570..=620).contains(&page.image.width())
-                && (820..=870).contains(&page.image.height()),
+            (570..=620).contains(&page.image.width()) && (820..=870).contains(&page.image.height()),
             "unexpected raster size: {}×{}",
             page.image.width(),
             page.image.height()

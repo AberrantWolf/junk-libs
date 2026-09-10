@@ -160,5 +160,9 @@ fn synthesizes_whitespace() {
         .iter()
         .find(|b| b.ch == ' ')
         .expect("synthetic space box");
-    assert!(space.w > 1.0, "space box should span the gap: w={}", space.w);
+    assert!(
+        space.w > 1.0,
+        "space box should span the gap: w={}",
+        space.w
+    );
 }

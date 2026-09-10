@@ -26,12 +26,20 @@ fn main() {
     let (platform, arch, lib_name) = match target.as_str() {
         t if t.contains("apple") => (
             "mac",
-            if t.contains("aarch64") { "arm64" } else { "x64" },
+            if t.contains("aarch64") {
+                "arm64"
+            } else {
+                "x64"
+            },
             "libpdfium.dylib",
         ),
         t if t.contains("linux") => (
             "linux",
-            if t.contains("aarch64") { "arm64" } else { "x64" },
+            if t.contains("aarch64") {
+                "arm64"
+            } else {
+                "x64"
+            },
             "libpdfium.so",
         ),
         t if t.contains("windows") => (

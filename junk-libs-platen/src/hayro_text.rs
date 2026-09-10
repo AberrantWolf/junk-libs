@@ -17,12 +17,12 @@
 //! decides whether this is close enough (SPEC.md open question).
 
 use hayro::hayro_interpret::font::Glyph;
+use hayro::hayro_interpret::hayro_cmap::BfString;
 use hayro::hayro_interpret::util::TransformExt;
 use hayro::hayro_interpret::{
     BlendMode, ClipPath, Context, Device, GlyphDrawMode, Image, InterpreterCache,
     InterpreterSettings, Paint, PathDrawMode, SoftMask, interpret_page,
 };
-use hayro::hayro_interpret::hayro_cmap::BfString;
 use hayro::hayro_syntax::page::Page;
 use hayro::vello_cpu::kurbo::{Affine, BezPath, Rect, Shape};
 
