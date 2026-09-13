@@ -7,6 +7,7 @@ members = [
     "junk-libs-disc",
     "junk-libs-disc-id",
     "junk-libs-dat",
+    "junk-libs-game-formats",
     "junk-libs-pdfium",
     "junk-libs-platen",
     "junk-libs-playback",
@@ -27,6 +28,7 @@ junk-libs-audio = { path = "junk-libs-audio" }
 junk-libs-disc = { path = "junk-libs-disc" }
 junk-libs-disc-id = { path = "junk-libs-disc-id" }
 junk-libs-dat = { path = "junk-libs-dat" }
+junk-libs-game-formats = { path = "junk-libs-game-formats" }
 junk-libs-pdfium = { path = "junk-libs-pdfium" }
 junk-libs-platen = { path = "junk-libs-platen" }
 junk-libs-playback = { path = "junk-libs-playback" }
@@ -40,6 +42,7 @@ egui = "0.34"
 image = "0.25"
 crc32fast = "1.4"
 sha1 = "0.10"
+sha2 = "0.10"
 md5 = "0.7"
 base64 = "0.22"
 chd = "0.3"

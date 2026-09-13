@@ -1,0 +1,20 @@
+[package]
+name = "junk-libs-game-formats"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+chd = []
+
+[dependencies]
+junk-libs-core.workspace = true
+junk-libs-disc.workspace = true
+crc32fast.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+md5.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
