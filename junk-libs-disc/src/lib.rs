@@ -39,7 +39,10 @@ pub use cue::{
 pub use format::{DiscFormat, detect_disc_format};
 pub use iso9660::{DirectoryRecord, PrimaryVolumeDescriptor, find_file_in_root, read_pvd};
 pub use layout::{LEAD_IN_FRAMES, TrackKind, TrackLayout, classify_mode};
-pub use pcm::{PCM_SAMPLES_PER_SECTOR, PcmSector, TrackPcmReader, sector_to_samples};
+pub use pcm::{
+    CdPcmReader, PCM_SAMPLES_PER_SECTOR, PcmSector, TrackPcmFrameReader, TrackPcmReader,
+    sector_to_samples,
+};
 pub use redumper::{
     CdRawStructure, CdText, CdTextBlock, CdTextTrack, DriveInfo, RedumperLog, Ripper, Sidecars,
     find_sidecars, parse_cdtext, parse_log, sniff_ripper, validate_current_cd_raw,

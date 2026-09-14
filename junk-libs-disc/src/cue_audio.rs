@@ -347,3 +347,17 @@ impl CueAudioReader {
         Ok(n)
     }
 }
+
+impl crate::pcm::CdPcmReader for CueAudioReader {
+    fn total_frames(&self) -> u64 {
+        Self::total_frames(self)
+    }
+
+    fn seek_frame(&mut self, frame: u64) -> Result<(), AnalysisError> {
+        Self::seek_frame(self, frame)
+    }
+
+    fn read_frames(&mut self, output: &mut [[i16; 2]]) -> Result<usize, AnalysisError> {
+        Self::read_frames(self, output)
+    }
+}

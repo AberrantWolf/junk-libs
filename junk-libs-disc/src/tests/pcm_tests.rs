@@ -3,7 +3,9 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use crate::layout::{LEAD_IN_FRAMES, TrackKind};
-use crate::pcm::{PCM_SAMPLES_PER_SECTOR, TrackPcmReader, sector_to_samples};
+use crate::pcm::{
+    CdPcmReader, PCM_SAMPLES_PER_SECTOR, TrackPcmFrameReader, TrackPcmReader, sector_to_samples,
+};
 use crate::sector::RAW_SECTOR_SIZE;
 
 // ---------------------------------------------------------------------------
@@ -137,6 +139,28 @@ fn from_cue_single_bin_reads_each_track_at_its_offset() {
     let first = r2.next().unwrap().unwrap();
     assert_eq!(first[0], 0xDEAD_000A);
     assert_eq!(r2.count(), 9);
+}
+
+#[test]
+fn frame_reader_preserves_signed_channels_and_sample_seeks() {
+    let dir = TempDir::new("frame_reader");
+    write_marked_bin(&dir.path.join("disc.bin"), 2, |index| {
+        if index == 0 { 0x7fff_8000 } else { 0x0001_ffff }
+    });
+    let cue_path = dir.path.join("disc.cue");
+    std::fs::write(
+        &cue_path,
+        "FILE \"disc.bin\" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n",
+    )
+    .unwrap();
+    let mut reader = TrackPcmFrameReader::new(TrackPcmReader::from_cue(&cue_path, 1).unwrap());
+    let mut frame = [[0_i16; 2]; 1];
+    reader.read_frames(&mut frame).unwrap();
+    assert_eq!(frame[0], [i16::MIN, i16::MAX]);
+    reader.seek_frame(588).unwrap();
+    reader.read_frames(&mut frame).unwrap();
+    assert_eq!(frame[0], [-1, 1]);
+    assert!(reader.seek_frame(1_177).is_err());
 }
 
 // ---------------------------------------------------------------------------

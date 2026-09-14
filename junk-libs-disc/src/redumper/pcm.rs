@@ -3,7 +3,7 @@
 //! Positions and lengths are stereo frames (two signed little-endian i16 samples).
 //! The raw timeline retains disc write offset; drive read offset is already applied.
 //! No audio descrambling or implicit offset correction is performed.
-use super::{Sidecars, validate_current_cd_raw};
+use super::{Sidecars, validate_current_cd_raw, validate_full_toc_bytes};
 use junk_libs_core::AnalysisError;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
@@ -20,9 +20,9 @@ impl<T: Read + Seek + Send> ReadSeek for T {}
 pub struct RawAudioTrack {
     pub number: u8,
     /// INDEX 01, relative to disc LBA 0, in stereo frames.
-    pub start_frame: u64,
+    pub start_frame: i64,
     /// Exclusive end: next INDEX 01, or lead-out. Includes the following audio pregap.
-    pub end_frame: u64,
+    pub end_frame: i64,
     pub pre_emphasis: bool,
     pub copy_permitted: bool,
 }
@@ -46,7 +46,9 @@ pub fn parse_audio_toc(bytes: &[u8]) -> Result<Vec<RawAudioTrack>, AnalysisError
             return Err(bad());
         }
         let lba = i32::from_be_bytes(d[4..8].try_into().unwrap());
-        if lba < 0 || points.last().is_some_and(|p: &(u8, u8, i32)| p.2 >= lba) {
+        if lba < -(ORIGIN_SECTORS as i32)
+            || points.last().is_some_and(|p: &(u8, u8, i32)| p.2 >= lba)
+        {
             return Err(bad());
         }
         points.push((d[2], d[1] & 15, lba));
@@ -67,8 +69,8 @@ pub fn parse_audio_toc(bytes: &[u8]) -> Result<Vec<RawAudioTrack>, AnalysisError
         }
         tracks.push(RawAudioTrack {
             number,
-            start_frame: lba as u64 * FRAMES_PER_SECTOR,
-            end_frame: pair[1].2 as u64 * FRAMES_PER_SECTOR,
+            start_frame: i64::from(lba) * FRAMES_PER_SECTOR as i64,
+            end_frame: i64::from(pair[1].2) * FRAMES_PER_SECTOR as i64,
             pre_emphasis: control & 1 != 0,
             copy_permitted: control & 2 != 0,
         });
@@ -86,18 +88,16 @@ pub fn read_audio_layout(sidecars: &Sidecars) -> Result<Vec<RawAudioTrack>, Anal
             ));
         }
         let full = std::fs::read(path)?;
-        if full.len() < 4
-            || usize::from(u16::from_be_bytes([full[0], full[1]])) + 2 != full.len()
-            || !(full.len() - 4).is_multiple_of(11)
-        {
-            return Err(AnalysisError::invalid_format("invalid redumper full TOC"));
-        }
-        if full[2] != 1 || full[3] != 1 || full[4..].chunks_exact(11).any(|d| d[0] != 1) {
-            return Err(AnalysisError::unsupported("redumper multisession playback"));
-        }
+        validate_full_toc_bytes(&full)?;
     }
     let tracks = parse_audio_toc(&std::fs::read(sidecars.toc.as_ref().unwrap())?)?;
-    let end = tracks.last().unwrap().end_frame + ORIGIN_SECTORS * FRAMES_PER_SECTOR;
+    let end = tracks
+        .last()
+        .unwrap()
+        .end_frame
+        .checked_add((ORIGIN_SECTORS * FRAMES_PER_SECTOR) as i64)
+        .and_then(|value| u64::try_from(value).ok())
+        .ok_or_else(|| AnalysisError::invalid_format("redumper lead-out frame overflow"))?;
     if end > structure.sample_frames || end / FRAMES_PER_SECTOR > structure.subcode_frames {
         return Err(AnalysisError::invalid_format(
             "redumper lead-out exceeds raw timeline",
@@ -147,7 +147,7 @@ impl RawAudioReader {
             .iter()
             .find(|t| t.number == number)
             .ok_or_else(|| AnalysisError::invalid_format("audio track not found"))?;
-        Self::from_sources(
+        Self::from_signed_sources(
             Box::new(BufReader::new(File::open(
                 sidecars.scram.as_ref().unwrap(),
             )?)),
@@ -287,6 +287,20 @@ impl RawAudioReader {
         }
         self.position += count as u64;
         Ok((count, quality))
+    }
+}
+
+impl crate::pcm::CdPcmReader for RawAudioReader {
+    fn total_frames(&self) -> u64 {
+        Self::total_frames(self)
+    }
+
+    fn seek_frame(&mut self, frame: u64) -> Result<(), AnalysisError> {
+        Self::seek_frame(self, frame)
+    }
+
+    fn read_frames(&mut self, output: &mut [[i16; 2]]) -> Result<usize, AnalysisError> {
+        Self::read_frames(self, output).map(|(count, _)| count)
     }
 }
 

@@ -5,11 +5,15 @@
 
 use thiserror::Error;
 
+mod bounded;
 pub mod crc;
 pub mod dbar;
 pub mod offset;
 pub mod verify;
 
+pub use bounded::{
+    ACCURATERIP_WORKING_BUFFER_BYTES, BoundedDiscReader, DiscPcmTrack, verify_with_offset_reader,
+};
 pub use crc::{
     PcmSector, SAMPLES_PER_SECTOR, SKIP_SAMPLES, TrackCrc, TrackPosition, skip_bounds,
     track_crc_samples, track_crc_streaming,
@@ -34,4 +38,10 @@ pub enum AccurateRipError {
 
     #[error("dBAR parse: {0}")]
     Parse(String),
+
+    #[error("invalid AccurateRip PCM layout: {0}")]
+    Layout(String),
+
+    #[error("AccurateRip PCM ended after {actual} frames; expected {expected}")]
+    UnexpectedEof { expected: u64, actual: u64 },
 }

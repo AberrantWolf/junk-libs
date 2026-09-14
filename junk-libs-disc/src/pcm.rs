@@ -42,6 +42,19 @@ use crate::sector::RAW_SECTOR_SIZE;
 /// AccurateRip sense: `2352 bytes / 4 bytes per stereo sample = 588`).
 pub const PCM_SAMPLES_PER_SECTOR: usize = 588;
 
+/// Exact CD-DA PCM access for preservation and verification algorithms.
+///
+/// Coordinates and lengths are stereo sample frames. Every frame contains two
+/// signed 16-bit samples in channel order at 44,100 Hz. Implementations must not
+/// synthesize missing source frames. Reads are bounded by the caller-provided
+/// slice; successful short reads are permitted at internal source/block boundaries.
+/// Zero frames indicates end of stream (unless the output slice is empty).
+pub trait CdPcmReader {
+    fn total_frames(&self) -> u64;
+    fn seek_frame(&mut self, frame: u64) -> Result<(), AnalysisError>;
+    fn read_frames(&mut self, output: &mut [[i16; 2]]) -> Result<usize, AnalysisError>;
+}
+
 /// One CDDA sector's worth of stereo samples packed as `u32`.
 ///
 /// Each entry is `left | (right << 16)`, both channels signed 16-bit in
@@ -337,6 +350,72 @@ impl Iterator for TrackPcmReader {
     }
 }
 
+/// Exact sample-addressable view over a [`TrackPcmReader`]. The wrapper keeps
+/// at most one decoded CD sector and is intended for bounded cross-track
+/// algorithms such as AccurateRip offset search.
+#[derive(Debug)]
+pub struct TrackPcmFrameReader {
+    inner: TrackPcmReader,
+    frame_position: u64,
+    cached_sector: Option<(u32, PcmSector)>,
+}
+
+impl TrackPcmFrameReader {
+    pub fn new(inner: TrackPcmReader) -> Self {
+        Self {
+            inner,
+            frame_position: 0,
+            cached_sector: None,
+        }
+    }
+}
+
+impl CdPcmReader for TrackPcmFrameReader {
+    fn total_frames(&self) -> u64 {
+        self.inner.total_samples()
+    }
+
+    fn seek_frame(&mut self, frame: u64) -> Result<(), AnalysisError> {
+        if frame > self.total_frames() {
+            return Err(AnalysisError::invalid_format(format!(
+                "PCM frame seek {frame} exceeds track length {}",
+                self.total_frames()
+            )));
+        }
+        self.frame_position = frame;
+        Ok(())
+    }
+
+    fn read_frames(&mut self, output: &mut [[i16; 2]]) -> Result<usize, AnalysisError> {
+        let available = self.total_frames().saturating_sub(self.frame_position);
+        let wanted = output
+            .len()
+            .min(usize::try_from(available).unwrap_or(usize::MAX));
+        let mut written = 0;
+        while written < wanted {
+            let sector = u32::try_from(self.frame_position / PCM_SAMPLES_PER_SECTOR as u64)
+                .map_err(|_| AnalysisError::invalid_format("PCM sector index overflow"))?;
+            let offset = (self.frame_position % PCM_SAMPLES_PER_SECTOR as u64) as usize;
+            if self.cached_sector.as_ref().map(|cached| cached.0) != Some(sector) {
+                self.inner.seek_to_sector(sector)?;
+                let raw = self.inner.read_next_raw()?;
+                self.cached_sector = Some((sector, sector_to_samples(&raw)));
+            }
+            let cached = &self.cached_sector.as_ref().expect("sector cached").1;
+            let count = (wanted - written).min(PCM_SAMPLES_PER_SECTOR - offset);
+            for (target, &packed) in output[written..written + count]
+                .iter_mut()
+                .zip(&cached[offset..offset + count])
+            {
+                *target = [packed as u16 as i16, (packed >> 16) as u16 as i16];
+            }
+            written += count;
+            self.frame_position += count as u64;
+        }
+        Ok(written)
+    }
+}
+
 /// Reinterpret a 2352-byte raw CD audio sector as 588 stereo `u32` samples.
 ///
 /// Each sample packs `left | (right << 16)` where both channels are
@@ -367,3 +446,112 @@ fn guard_audio(layout: &TrackLayout) -> Result<(), AnalysisError> {
 #[cfg(test)]
 #[path = "tests/pcm_tests.rs"]
 mod tests;
+
+pub struct PcmByteSource {
+    pub absolute_start_frame: u64,
+    pub frames: u64,
+    pub reader: Box<dyn junk_libs_core::ReadSeek + Send>,
+}
+
+pub struct SourcePcmReader {
+    sources: Vec<PcmByteSource>,
+    absolute_start_frame: u64,
+    frames: u64,
+    position: u64,
+}
+
+impl CdPcmReader for SourcePcmReader {
+    fn total_frames(&self) -> u64 {
+        self.frames
+    }
+
+    fn seek_frame(&mut self, frame: u64) -> Result<(), AnalysisError> {
+        if frame > self.frames {
+            return Err(AnalysisError::invalid_format("seek beyond package CD PCM"));
+        }
+        self.position = frame;
+        Ok(())
+    }
+
+    fn read_frames(&mut self, output: &mut [[i16; 2]]) -> Result<usize, AnalysisError> {
+        if output.is_empty() || self.position == self.frames {
+            return Ok(0);
+        }
+        let absolute = self
+            .absolute_start_frame
+            .checked_add(self.position)
+            .ok_or_else(|| AnalysisError::invalid_format("PCM offset overflow"))?;
+        let source = self
+            .sources
+            .iter_mut()
+            .find(|source| {
+                absolute >= source.absolute_start_frame
+                    && absolute < source.absolute_start_frame + source.frames
+            })
+            .ok_or_else(|| AnalysisError::invalid_format("hole in package CD PCM"))?;
+        let source_frame = absolute - source.absolute_start_frame;
+        let count = output
+            .len()
+            .min(16 * 1024)
+            .min((source.frames - source_frame) as usize)
+            .min((self.frames - self.position) as usize);
+        let byte_offset = source_frame
+            .checked_mul(4)
+            .ok_or_else(|| AnalysisError::invalid_format("PCM byte offset overflow"))?;
+        source.reader.seek(std::io::SeekFrom::Start(byte_offset))?;
+        let mut bytes = vec![
+            0_u8;
+            count.checked_mul(4).ok_or_else(|| {
+                AnalysisError::invalid_format("PCM read length overflow")
+            })?
+        ];
+        source.reader.read_exact(&mut bytes)?;
+        for (frame, bytes) in output[..count].iter_mut().zip(bytes.chunks_exact(4)) {
+            *frame = [
+                i16::from_le_bytes([bytes[0], bytes[1]]),
+                i16::from_le_bytes([bytes[2], bytes[3]]),
+            ];
+        }
+        self.position += count as u64;
+        Ok(count)
+    }
+}
+
+impl SourcePcmReader {
+    /// Open a contiguous logical CD-DA range in ordered little-endian byte sources.
+    pub fn new(
+        sources: Vec<PcmByteSource>,
+        absolute_start_frame: u64,
+        frames: u64,
+    ) -> Result<Self, AnalysisError> {
+        let origin = sources
+            .first()
+            .map(|source| source.absolute_start_frame)
+            .unwrap_or(0);
+        let mut next = origin;
+        for source in &sources {
+            if source.absolute_start_frame != next || source.frames == 0 {
+                return Err(AnalysisError::invalid_format(
+                    "PCM sources must be nonempty and contiguous",
+                ));
+            }
+            next = next
+                .checked_add(source.frames)
+                .ok_or_else(|| AnalysisError::invalid_format("PCM source overflow"))?;
+        }
+        let end = absolute_start_frame
+            .checked_add(frames)
+            .ok_or_else(|| AnalysisError::invalid_format("PCM range overflow"))?;
+        if sources.is_empty() || absolute_start_frame < origin || end > next {
+            return Err(AnalysisError::invalid_format(
+                "PCM range is outside its sources",
+            ));
+        }
+        Ok(Self {
+            sources,
+            absolute_start_frame,
+            frames,
+            position: 0,
+        })
+    }
+}

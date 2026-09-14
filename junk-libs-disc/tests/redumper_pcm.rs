@@ -1,6 +1,19 @@
 use junk_libs_disc::redumper::pcm::{InvalidSamplePolicy, RawAudioReader, parse_audio_toc};
 use std::io::{Seek, SeekFrom, Write};
 
+#[test]
+fn toc_accepts_a_signed_first_track_lead_in_without_unsigned_wrap() {
+    let mut toc = vec![0, 18, 1, 1];
+    toc.extend_from_slice(&[0, 0x10, 1, 0]);
+    toc.extend_from_slice(&(-150_i32).to_be_bytes());
+    toc.extend_from_slice(&[0, 0x10, 0xaa, 0]);
+    toc.extend_from_slice(&450_i32.to_be_bytes());
+
+    let tracks = parse_audio_toc(&toc).unwrap();
+    assert_eq!(tracks[0].start_frame, -150 * 588);
+    assert_eq!(tracks[0].end_frame, 450 * 588);
+}
+
 fn sources(states: &[u8]) -> (Box<std::fs::File>, Box<std::fs::File>) {
     let origin = 45150 * 588;
     let mut pcm = tempfile::tempfile().unwrap();

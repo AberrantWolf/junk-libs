@@ -27,6 +27,7 @@ pub use cdtext::{CdText, CdTextBlock, CdTextTrack, parse_cdtext, parse_cdtext_by
 pub use log::{DriveInfo, RedumperLog, parse_log, parse_log_text};
 pub use sidecars::{
     CdRawStructure, Sidecars, find_sidecars, sniff_ripper, validate_current_cd_raw,
+    validate_current_cd_raw_parts, validate_full_toc_bytes,
 };
 
 /// Which CD-ripping tool produced a given `.log` sidecar.

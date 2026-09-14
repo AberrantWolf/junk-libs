@@ -160,6 +160,19 @@ pub fn validate_current_cd_raw(sidecars: &Sidecars) -> Result<CdRawStructure, An
     let scram_len = std::fs::metadata(scram)?.len();
     let state_len = std::fs::metadata(state)?.len();
     let subcode_len = std::fs::metadata(subcode)?.len();
+    let toc_bytes = std::fs::read(toc)?;
+    validate_current_cd_raw_parts(scram_len, state_len, subcode_len, &toc_bytes)
+}
+
+/// Validate current redumper CD sidecar lengths and the exact bounded TOC body
+/// without requiring filesystem paths. Package/archive adapters use this entry
+/// point after authorizing and opening their own opaque readers.
+pub fn validate_current_cd_raw_parts(
+    scram_len: u64,
+    state_len: u64,
+    subcode_len: u64,
+    toc: &[u8],
+) -> Result<CdRawStructure, AnalysisError> {
     let expected_scram_len = state_len
         .checked_mul(4)
         .ok_or_else(|| AnalysisError::corrupted_header(".state sample count overflow"))?;
@@ -180,7 +193,7 @@ pub fn validate_current_cd_raw(sidecars: &Sidecars) -> Result<CdRawStructure, An
     let sample_frame_delta =
         i64::try_from(i128::from(state_len) - i128::from(nominal_sample_frames))
             .map_err(|_| AnalysisError::corrupted_header("CD sample timeline delta overflow"))?;
-    validate_scsi_response_length(toc, ".toc")?;
+    validate_scsi_response_bytes(toc, ".toc")?;
     Ok(CdRawStructure {
         sample_frames: state_len,
         subcode_frames,
@@ -188,21 +201,32 @@ pub fn validate_current_cd_raw(sidecars: &Sidecars) -> Result<CdRawStructure, An
     })
 }
 
-fn validate_scsi_response_length(path: &Path, label: &str) -> Result<(), AnalysisError> {
-    use std::io::Read;
+pub fn validate_full_toc_bytes(full: &[u8]) -> Result<(), AnalysisError> {
+    validate_scsi_response_bytes(full, ".fulltoc")?;
+    if full.len() < 4
+        || !(full.len() - 4).is_multiple_of(11)
+        || full[2] != 1
+        || full[3] != 1
+        || full[4..]
+            .chunks_exact(11)
+            .any(|descriptor| descriptor[0] != 1)
+    {
+        return Err(AnalysisError::unsupported("redumper multisession playback"));
+    }
+    Ok(())
+}
 
-    let actual = std::fs::metadata(path)?.len();
-    if actual < 4 {
+fn validate_scsi_response_bytes(bytes: &[u8], label: &str) -> Result<(), AnalysisError> {
+    if bytes.len() < 4 {
         return Err(AnalysisError::corrupted_header(format!(
             "{label} is shorter than its four-byte SCSI response header"
         )));
     }
-    let mut header = [0u8; 2];
-    std::fs::File::open(path)?.read_exact(&mut header)?;
-    let declared = u64::from(u16::from_be_bytes(header)) + 2;
-    if actual != declared {
+    let declared = usize::from(u16::from_be_bytes([bytes[0], bytes[1]])) + 2;
+    if bytes.len() != declared {
         return Err(AnalysisError::corrupted_header(format!(
-            "{label} length disagrees with its SCSI response header: {actual} bytes present, {declared} declared"
+            "{label} length disagrees with its SCSI response header: {} bytes present, {declared} declared",
+            bytes.len()
         )));
     }
     Ok(())

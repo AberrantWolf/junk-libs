@@ -170,7 +170,7 @@ fn frame_450_accelerates_an_arv2_offset_but_does_not_replace_full_match() {
         },
     );
     assert_eq!(only_partial.chosen_sample_shift, Some(shift));
-    assert_eq!(only_partial.status, VerificationStatus::Mismatched);
+    assert_eq!(only_partial.status, VerificationStatus::IncompleteSearch);
     assert!(!only_partial.tracks[0].is_verified());
 }
 
@@ -211,7 +211,7 @@ fn no_checksum_or_partial_evidence_does_not_invent_zero_shift() {
             max_sample_shift: 20,
         },
     );
-    assert_eq!(summary.status, VerificationStatus::Mismatched);
+    assert_eq!(summary.status, VerificationStatus::IncompleteSearch);
     assert_eq!(summary.chosen_sample_shift, None);
     assert_eq!(summary.tracks[0].sample_shift, None);
 }
