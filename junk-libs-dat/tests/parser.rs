@@ -23,7 +23,7 @@ game (
 }
 
 #[test]
-fn malformed_size_fails_in_xml_and_does_not_create_a_clr_rom() {
+fn malformed_size_fails_in_both_formats() {
     let xml = br#"<datafile><header><name>System</name></header><game name="Bad"><rom name="bad.bin" size="NaN" crc="00"/></game></datafile>"#;
     assert!(parse_dat(xml.as_slice()).is_err());
     let clr = br#"clrmamepro (
@@ -34,6 +34,22 @@ game (
  rom ( name "bad.bin" size NaN crc 00 )
 )
 "#;
-    let parsed = parse_dat(clr.as_slice()).unwrap();
-    assert!(parsed.games[0].roms.is_empty());
+    assert!(parse_dat(clr.as_slice()).is_err());
+}
+
+#[test]
+fn malformed_catalogs_cannot_silently_drop_files_or_trailing_games() {
+    use std::io::Cursor;
+    let xml = r#"<datafile><header><name>Test</name><version>1</version></header><game name="one"><rom name="one" size="1" crc="01"/></game></datafile>"#;
+    assert!(junk_libs_dat::parse_dat(Cursor::new(xml.trim_end_matches("</datafile>"))).is_err());
+    assert!(junk_libs_dat::parse_dat(Cursor::new(xml.replace("size=\"1\"", ""))).is_err());
+    let text = "clrmamepro (\n name Test\n version 1\n)\ngame (\n name one\n rom ( name one size 1 crc 01 )\n rom ( name two size BAD crc 02 )\n)\n";
+    assert!(junk_libs_dat::parse_dat(Cursor::new(text)).is_err());
+    assert!(junk_libs_dat::parse_dat(Cursor::new(text.replace("size BAD", ""))).is_err());
+    let valid = text.replace("size BAD", "size 2");
+    assert!(junk_libs_dat::parse_dat(Cursor::new(&valid)).is_ok());
+    assert!(
+        junk_libs_dat::parse_dat(Cursor::new(format!("{valid}game (\n name truncated\n"))).is_err()
+    );
+    assert!(junk_libs_dat::parse_dat(Cursor::new(valid.replace("crc 02 )", "crc 02"))).is_err());
 }

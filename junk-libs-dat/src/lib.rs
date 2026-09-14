@@ -174,6 +174,7 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
         games: Vec::new(),
     };
 
+    let mut depth = 0_usize;
     let mut in_header = false;
     let mut current_tag = String::new();
     let mut current_game: Option<DatGame> = None;
@@ -184,9 +185,15 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
     loop {
         match xml.read_event_into(&mut buf)? {
             Event::Start(ref e) => {
+                depth += 1;
                 let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 match tag_name.as_str() {
                     "header" => in_header = true,
+                    "rom" => {
+                        if let Some(ref mut game) = current_game {
+                            game.roms.push(parse_xml_rom_attributes(e)?);
+                        }
+                    }
                     "game" => {
                         current_game = Some(parse_xml_game_start(e)?);
                         game_serial = None;
@@ -224,6 +231,9 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                 }
             }
             Event::End(ref e) => {
+                depth = depth
+                    .checked_sub(1)
+                    .ok_or_else(|| DatError::invalid_dat("Unexpected closing element"))?;
                 let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 match tag_name.as_str() {
                     "header" => in_header = false,
@@ -247,7 +257,12 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                     _ => current_tag.clear(),
                 }
             }
-            Event::Eof => break,
+            Event::Eof => {
+                if depth != 0 {
+                    return Err(DatError::invalid_dat("Truncated XML DAT"));
+                }
+                break;
+            }
             _ => {}
         }
         buf.clear();
@@ -272,12 +287,14 @@ fn parse_xml_rom_attributes(e: &quick_xml::events::BytesStart<'_>) -> Result<Dat
         serial: None,
     };
 
+    let mut has_size = false;
     for attr in e.attributes() {
         let attr = attr?;
         let value = attribute_text(&attr)?;
         match attr.key.as_ref() {
             b"name" => rom.name = value,
             b"size" => {
+                has_size = true;
                 rom.size = value
                     .parse()
                     .map_err(|_| DatError::invalid_dat(format!("Invalid ROM size: {value}")))?;
@@ -290,6 +307,9 @@ fn parse_xml_rom_attributes(e: &quick_xml::events::BytesStart<'_>) -> Result<Dat
         }
     }
 
+    if !has_size {
+        return Err(DatError::invalid_dat("ROM entry declares no size"));
+    }
     Ok(rom)
 }
 
@@ -378,6 +398,13 @@ fn parse_clrmamepro<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
             continue;
         }
 
+        // A malformed ROM line must not disappear from a supposedly complete set.
+        if trimmed.split_whitespace().next() == Some("rom") {
+            let rest = trimmed.strip_prefix("rom").unwrap().trim();
+            if !rest.starts_with('(') || !rest.ends_with(')') {
+                return Err(DatError::invalid_dat("Malformed ClrMamePro ROM delimiters"));
+            }
+        }
         // Parse key-value pairs inside a block
         let block_type = in_block.as_ref().unwrap();
         if let Some((key, value)) = parse_kv(trimmed) {
@@ -400,9 +427,10 @@ fn parse_clrmamepro<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                             "version" => game_version = Some(value),
                             "category" => game_category = Some(value),
                             "rom" => {
-                                if let Some(rom) = parse_clr_rom_inline(&value) {
-                                    game.roms.push(rom);
-                                }
+                                let rom = parse_clr_rom_inline(&value).ok_or_else(|| {
+                                    DatError::invalid_dat("Invalid ClrMamePro ROM entry")
+                                })?;
+                                game.roms.push(rom);
                             }
                             _ => {}
                         }
@@ -411,6 +439,10 @@ fn parse_clrmamepro<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                 _ => {}
             }
         }
+    }
+
+    if in_block.is_some() {
+        return Err(DatError::invalid_dat("Truncated ClrMamePro DAT block"));
     }
 
     if dat.name.is_empty() && dat.games.is_empty() {
@@ -466,7 +498,13 @@ fn parse_kv(line: &str) -> Option<(String, String)> {
 /// Parse an inline ROM entry like:
 /// `name "Game (Region).ext" size 12345 crc AABBCCDD md5 ... sha1 ...`
 fn parse_clr_rom_inline(inner: &str) -> Option<DatRom> {
+    if inner.chars().filter(|c| *c == '"').count() % 2 != 0 {
+        return None;
+    }
     let tokens = tokenize_rom_line(inner);
+    if !tokens.len().is_multiple_of(2) {
+        return None;
+    }
     let mut rom = DatRom {
         name: String::new(),
         size: 0,
@@ -476,6 +514,7 @@ fn parse_clr_rom_inline(inner: &str) -> Option<DatRom> {
         serial: None,
     };
 
+    let mut has_size = false;
     let mut i = 0;
     while i < tokens.len() {
         match tokens[i].as_str() {
@@ -490,6 +529,7 @@ fn parse_clr_rom_inline(inner: &str) -> Option<DatRom> {
                 if i < tokens.len() {
                     if let Ok(s) = tokens[i].parse() {
                         rom.size = s;
+                        has_size = true;
                     } else {
                         log::warn!(
                             "Invalid ROM size '{}' in ClrMamePro DAT, skipping entry",
@@ -528,7 +568,7 @@ fn parse_clr_rom_inline(inner: &str) -> Option<DatRom> {
         i += 1;
     }
 
-    if rom.name.is_empty() {
+    if rom.name.is_empty() || !has_size {
         return None;
     }
     Some(rom)
