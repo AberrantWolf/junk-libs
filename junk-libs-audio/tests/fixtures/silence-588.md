@@ -1,0 +1,1 @@
+588 stereo frames of zero signed 16-bit little-endian PCM at 44100 Hz. Generated with FFmpeg 8.1.2/libopus: `ffmpeg -f s16le -ar 44100 -ac 2 -i silence.pcm -c:a libopus -frame_duration 20 -application audio -b:a 128k -f opus silence-588.opus`. Not an opusenc golden. RFC 7845: 960 coded frames, final granule 952, pre-skip 312, playable frames 640, end trim 8.

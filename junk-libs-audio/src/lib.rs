@@ -236,3 +236,6 @@ mod decoder_contract_tests {
         assert!(decoder.seek_exact(FramePosition(5)).is_err());
     }
 }
+
+#[cfg(feature = "derivative-validation")]
+pub mod validation;
