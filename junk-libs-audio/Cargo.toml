@@ -8,6 +8,7 @@ license.workspace = true
 default = []
 derivative-validation = ["dep:claxon", "dep:junk-libs-disc"]
 decode-wav = ["dep:symphonia"]
+decode-compressed = ["dep:symphonia", "symphonia/all"]
 disc-readers = ["dep:junk-libs-disc"]
 resample = ["dep:rubato"]
 

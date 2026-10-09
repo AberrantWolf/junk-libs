@@ -14,7 +14,12 @@ use thiserror::Error;
 mod wav;
 
 #[cfg(feature = "decode-wav")]
-pub use wav::{AudioDecodeError, WavDecoder};
+pub use wav::WavDecoder;
+
+#[cfg(any(feature = "decode-wav", feature = "decode-compressed"))]
+mod media;
+#[cfg(any(feature = "decode-wav", feature = "decode-compressed"))]
+pub use media::{AudioDecodeError, AudioDecoder};
 
 #[cfg(feature = "disc-readers")]
 mod disc;
@@ -239,3 +244,8 @@ mod decoder_contract_tests {
 
 #[cfg(feature = "derivative-validation")]
 pub mod validation;
+
+#[cfg(all(feature = "decode-compressed", feature = "resample"))]
+mod sequence;
+#[cfg(all(feature = "decode-compressed", feature = "resample"))]
+pub use sequence::{SequenceSource, decode_sequence};

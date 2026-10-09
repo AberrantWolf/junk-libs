@@ -42,6 +42,16 @@ impl SincResampler {
                 maximum: MAX_CHUNK_FRAMES,
             });
         }
+        let rate = input_format.sample_rate();
+        if !(8000..=384000).contains(&rate)
+            || !(8000..=384000).contains(&output_rate)
+            || input_format.channels() > 8
+            || u64::from(output_rate) * chunk_frames as u64 / u64::from(rate) > 65_536
+        {
+            return Err(ResampleError::InvalidFormat(
+                "resampling exceeds supported rate/channel/buffer bounds".into(),
+            ));
+        }
         let output_format = PcmFormat::new(output_rate, input_format.channels())
             .map_err(|error| ResampleError::InvalidFormat(error.to_string()))?;
         let inner = SincFixedIn::new(
