@@ -1,75 +1,71 @@
 # junk-libs
 
-Shared Rust library infrastructure for the [retro-junk](https://github.com/AberrantWolf/retro-junk), [phono-junk](https://github.com/AberrantWolf/phono-junk), [print-junk](https://github.com/AberrantWolf/print-junk), and expat-junk tools.
+Shared Rust libraries for [Junk Collector](https://github.com/AberrantWolf/junk-collector), [Retro Junk](https://github.com/AberrantWolf/retro-junk), [Phono Junk](https://github.com/AberrantWolf/phono-junk), [Trash Amp](https://github.com/AberrantWolf/trash-amp), and the document tools.
 
-Reusable building blocks that carry no app-specific semantics: CD image parsing, streaming hashers, checksum descriptors, common I/O traits, and PDF rendering. Domain meaning (retro-game, audio, document translation) lives in the consuming projects.
+Use individual crates for reusable parsing, hashing, audio, rendering, and UI primitives. Collection policy, provider access, authorization, and application workflows stay in consumers.
 
-## Crates
+## 📦 Crates
 
-- **`junk-libs-core`** — Generic types. `AnalysisError` (thiserror), `MultiHasher` (streaming CRC32/SHA1/MD5), `ChecksumAlgorithm` / `ExpectedChecksum`, multi-disc filename grouping utilities, `ReadSeek` trait alias, byte/ASCII helpers.
-- **`junk-libs-accuraterip`** — Headless AccurateRip CRC v1/v2, boundary skips,
-  dBAR parsing/validation, checksum matching, frame-450 evidence, and bounded
-  sample-offset search over packed integer CD PCM. Network/provider policy stays
-  in consumers.
-- **`junk-libs-audio`** — Opaque `Read + Seek + Send` byte sources with length/
-  media hints and validated interleaved-`f32` PCM chunks addressed in integer
-  frames. Optional `decode-wav` provides qualified PCM-WAV decoding and exact
-  frame seeking; optional `disc-readers` adapts already-open CUE and redumper
-  readers without owning path policy. Compressed codecs, resampling, and DSP are
-  not yet implemented. Optional `resample` provides bounded streaming sinc
-  resampling with exact final length; qualified gain and hard-clipping primitives
-  are dependency-free.
-- **`junk-libs-disc`** — CD-ROM / optical disc parsing. CUE sheet parser (standard + CDRWin compatibility), CHD reader, ISO 9660 filesystem, CD sector constants, format detection.
-- **`junk-libs-disc-id`** — Neutral audio-CD TOC coordinates plus MusicBrainz,
-  FreeDB/CDDB, and AccurateRip identifier calculation. Published MusicBrainz,
-  libdiscid, and ARver vectors gate the algorithms; provider/network policy stays
-  in consumers.
-- **`junk-libs-dat`** — Streaming, catalog-neutral Logiqx XML and ClrMamePro
-  DAT parsing with normalized checksums and optional serial/region/version/category
-  observations. Downloading, caching, matching, naming, and platform policy stay
-  in consumers.
-- **`junk-libs-pdfium`** — GUI-agnostic PDFium render core: rasterize PDF pages to RGBA and extract the text layer as per-character boxes. Its `build.rs` vendors the matching PDFium binary automatically (downloads from bblanchon/pdfium-binaries into `OUT_DIR`), so consumers need no manual setup; bind once per process via `instance()`. Shared by print-junk and expat-junk.
-- **`junk-libs-platen`** — Engine-agnostic successor to `junk-libs-pdfium`: same render API (RGBA page bitmaps, per-character text boxes) with the engine behind a feature flag — `backend-hayro` (default, pure Rust, nothing to download or bundle, parallel rendering) or `backend-pdfium` (legacy, kept for A/B comparison during migration). See its SPEC.md.
-- **`junk-libs-playback`** — Opaque consumer queue keys, generations, track-local
-  integer-frame positions, deterministic queue transitions, and generation-fenced
-  seeking. It contains no GUI, audio device, or product identifiers.
+| Crate | Purpose |
+|---|---|
+| `junk-libs-core` | Streaming CRC32/MD5/SHA-1 hashing, checksum types, reader traits, and filename grouping. |
+| `junk-libs-disc` | CUE, CHD, ISO 9660, and redumper parsing; CD sectors and integer PCM readers. |
+| `junk-libs-disc-id` | MusicBrainz, FreeDB/CDDB, and AccurateRip disc identifiers from validated TOCs. |
+| `junk-libs-accuraterip` | AccurateRip v1/v2 checksums, dBAR parsing, matching, and bounded sample-offset search. |
+| `junk-libs-dat` | Streaming Logiqx XML and ClrMamePro DAT parsing. |
+| `junk-libs-game-formats` | Reader-based game-dump inspection, normalization, and hashing. |
+| `junk-libs-audio` | Opaque byte sources, PCM frame coordinates, decoding, resampling, DSP, and derivative validation. |
+| `junk-libs-playback` | Consumer-owned queue keys, deterministic transitions, and generation-fenced seeking. |
+| `junk-libs-platen` | PDF rendering and text extraction; pure Rust by default, optional PDFium backend. |
+| `junk-libs-pdfium` | PDFium rendering and text extraction; downloads its matching native library at build time. |
+| `junk-libs-raster` | GUI-independent raster helpers. |
+| `junk-libs-egui-docview` | Zoomable, pageable egui canvas with editable rectangular regions. |
+| `junk-libs-egui-pdfdoc` | PDF/image document model for the egui document viewer. |
 
-## Build
+### Audio features
 
-```bash
-cargo build
-cargo test
+`junk-libs-audio` has no default features. Enable only what your application needs:
+
+- `decode-wav`: PCM-WAV decoding and exact frame seeking.
+- `decode-compressed`: Symphonia codec support, including FLAC; exact seek and truncation checks have an independent FLAC test vector.
+- `disc-readers`: adapters for already-open CUE and redumper readers.
+- `resample`: bounded streaming sinc resampling. With `decode-compressed`, adds cancellable sequence conversion that retains resampler phase across compatible adjacent sources.
+- `derivative-validation`: FLAC integer-PCM comparison and Ogg Opus structure inspection.
+
+Gain and hard clipping are available without optional features. Codec availability does not imply every format is independently qualified; disc identifiers and integrity hashes are distinct from catalog verification.
+
+## 🔧 Build and check
+
+Use a current stable Rust toolchain with edition 2024 support.
+
+```sh
+cargo build --workspace --locked
+cargo test --workspace --all-features --locked
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo fmt --all -- --check
 ```
 
-## Consuming this crate
+Some real-dump and external-tool tests are explicitly ignored unless their fixtures are provisioned.
 
-From another Cargo workspace, add via git dependency:
+## Use in another workspace
+
+Depend on individual crates from Git; pin a `rev` or an existing `tag` for reproducible builds:
 
 ```toml
 [workspace.dependencies]
 junk-libs-core = { git = "https://github.com/AberrantWolf/junk-libs" }
-junk-libs-accuraterip = { git = "https://github.com/AberrantWolf/junk-libs" }
-junk-libs-audio = { git = "https://github.com/AberrantWolf/junk-libs" }
-junk-libs-disc = { git = "https://github.com/AberrantWolf/junk-libs" }
-junk-libs-disc-id = { git = "https://github.com/AberrantWolf/junk-libs" }
-junk-libs-dat = { git = "https://github.com/AberrantWolf/junk-libs" }
-junk-libs-playback = { git = "https://github.com/AberrantWolf/junk-libs" }
+junk-libs-audio = { git = "https://github.com/AberrantWolf/junk-libs", features = ["decode-compressed", "resample"] }
 ```
 
-For faster local iteration when developing against junk-libs, override with a path dep via Cargo's `[patch]` section in the consuming workspace's root `Cargo.toml`:
+For local development, override the Git dependencies with a sibling checkout:
 
 ```toml
 [patch."https://github.com/AberrantWolf/junk-libs"]
 junk-libs-core = { path = "../junk-libs/junk-libs-core" }
-junk-libs-accuraterip = { path = "../junk-libs/junk-libs-accuraterip" }
 junk-libs-audio = { path = "../junk-libs/junk-libs-audio" }
-junk-libs-disc = { path = "../junk-libs/junk-libs-disc" }
-junk-libs-disc-id = { path = "../junk-libs/junk-libs-disc-id" }
-junk-libs-dat = { path = "../junk-libs/junk-libs-dat" }
-junk-libs-playback = { path = "../junk-libs/junk-libs-playback" }
 ```
 
-This requires `junk-libs` to be cloned as a sibling directory. Cargo errors if the path doesn't exist, so either clone both repos side-by-side or leave the patch lines commented out.
+Add overrides for other crates you edit. Active path overrides require that checkout to exist.
 
 ## License
 
