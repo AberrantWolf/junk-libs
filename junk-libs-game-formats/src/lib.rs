@@ -137,6 +137,20 @@ pub fn hash_raw<R: ReadSeek + ?Sized>(reader: &mut R) -> Result<QualifiedHashes,
     hash_range(reader, 0, bytes, RAW_DOMAIN)
 }
 
+/// Candidate interpretation for standard headerless PRG/CHR DAT bytes. This is
+/// not structural recognition; the caller must require a complete catalog match.
+pub fn hash_headerless_ines<R: ReadSeek + ?Sized>(
+    reader: &mut R,
+) -> Result<QualifiedHashes, AnalysisError> {
+    let bytes = reader_len(reader)?;
+    if bytes < 8192 || bytes % 8192 != 0 {
+        return Err(AnalysisError::other(
+            "Unsupported headerless PRG/CHR layout",
+        ));
+    }
+    hash_range(reader, 0, bytes, INES_PAYLOAD_DOMAIN)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InesVersion {
     INes,
@@ -285,8 +299,16 @@ pub fn detect_n64_format(magic: &[u8]) -> Option<N64Format> {
 pub fn normalize_n64_in_place(bytes: &mut [u8], format: N64Format) {
     match format {
         N64Format::Z64 => {}
-        N64Format::V64 => bytes.chunks_exact_mut(2).for_each(|pair| pair.swap(0, 1)),
-        N64Format::N64 => bytes.chunks_exact_mut(4).for_each(<[u8]>::reverse),
+        N64Format::V64 => bytes
+            .as_chunks_mut::<2>()
+            .0
+            .iter_mut()
+            .for_each(|pair| pair.swap(0, 1)),
+        N64Format::N64 => bytes
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .for_each(|word| word.reverse()),
     }
 }
 
@@ -458,6 +480,36 @@ pub fn hash_cue_raw_2352_with_progress<R: ReadSeek>(
     mut open_source: impl FnMut(&str) -> Result<R, AnalysisError>,
     progress: &dyn Fn(u64, u64),
 ) -> Result<Vec<CueTrackHashes>, AnalysisError> {
+    if cue_text.len() > 1024 * 1024 {
+        return Err(AnalysisError::other("CUE exceeds 1 MiB"));
+    }
+    for (index, line) in cue_text.lines().enumerate() {
+        if index >= 4096 || line.len() > 4096 {
+            return Err(AnalysisError::other("CUE directive bounds exceeded"));
+        }
+        let Some(keyword) = line.split_whitespace().next() else {
+            continue;
+        };
+        if !matches!(
+            keyword.to_ascii_uppercase().as_str(),
+            "FILE"
+                | "TRACK"
+                | "INDEX"
+                | "PREGAP"
+                | "POSTGAP"
+                | "REM"
+                | "TITLE"
+                | "PERFORMER"
+                | "SONGWRITER"
+                | "CATALOG"
+                | "ISRC"
+                | "FLAGS"
+        ) {
+            return Err(AnalysisError::unsupported(format!(
+                "Unsupported CUE directive: {keyword}"
+            )));
+        }
+    }
     let sheet = junk_libs_disc::cue::parse_cue(cue_text)?;
     let mut source_names = std::collections::BTreeSet::new();
     for file in &sheet.files {
@@ -644,3 +696,6 @@ pub fn hash_chd_raw_2352<R: ReadSeek>(
         })
         .collect()
 }
+
+mod detection;
+pub use detection::*;

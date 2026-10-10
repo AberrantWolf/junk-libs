@@ -15,6 +15,9 @@ pub enum DatError {
     #[error("XML attribute error: {0}")]
     XmlAttribute(#[from] quick_xml::events::attributes::AttrError),
 
+    #[error("Unsupported DAT feature: {0}")]
+    Unsupported(String),
+
     #[error("Invalid DAT file: {0}")]
     InvalidDat(String),
 }
@@ -26,9 +29,18 @@ impl DatError {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatDialect {
+    LogiqxXml,
+    ClrMamePro,
+}
+
 /// A neutral DAT document (supports both Logiqx XML and `ClrMamePro`).
 #[derive(Debug, Clone)]
 pub struct DatFile {
+    pub dialect: DatDialect,
+    pub author: String,
+    pub url: String,
     pub name: String,
     pub description: String,
     pub version: String,
@@ -65,27 +77,128 @@ pub struct DatRom {
     pub serial: Option<String>,
 }
 
+/// Limit reads before XML events or text lines can allocate unbounded buffers.
+struct BoundedDatReader<R> {
+    inner: R,
+    total: usize,
+    segment: usize,
+    xml: bool,
+}
+impl<R: BufRead> BoundedDatReader<R> {
+    fn new(inner: R, xml: bool) -> Self {
+        Self {
+            inner,
+            total: 0,
+            segment: 0,
+            xml,
+        }
+    }
+}
+impl<R: BufRead> Read for BoundedDatReader<R> {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        let bytes = self.fill_buf()?;
+        let count = bytes.len().min(output.len());
+        output[..count].copy_from_slice(&bytes[..count]);
+        self.consume(count);
+        Ok(count)
+    }
+}
+impl<R: BufRead> BufRead for BoundedDatReader<R> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        let bytes = self.inner.fill_buf()?;
+        let bytes = &bytes[..bytes.len().min(8192)];
+        let mut segment = self.segment;
+        if self
+            .total
+            .checked_add(bytes.len())
+            .is_none_or(|n| n > 64 * 1024 * 1024)
+        {
+            return Err(std::io::Error::other("DAT exceeds 64 MiB"));
+        }
+        for byte in bytes {
+            segment += 1;
+            if segment > 64 * 1024 {
+                return Err(std::io::Error::other("DAT token or line exceeds 64 KiB"));
+            }
+            if if self.xml {
+                *byte == b'<' || *byte == b'>'
+            } else {
+                *byte == b'\n'
+            } {
+                segment = 0;
+            }
+        }
+        Ok(bytes)
+    }
+    fn consume(&mut self, count: usize) {
+        if let Ok(bytes) = self.inner.fill_buf() {
+            for byte in &bytes[..count] {
+                self.segment += 1;
+                if if self.xml {
+                    *byte == b'<' || *byte == b'>'
+                } else {
+                    *byte == b'\n'
+                } {
+                    self.segment = 0;
+                }
+            }
+        }
+        self.total += count;
+        self.inner.consume(count);
+    }
+}
+fn check_entry_limit(games: usize, roms: usize) -> Result<(), DatError> {
+    if games >= 100_000 || roms >= 4096 {
+        return Err(DatError::invalid_dat(
+            "DAT entry count exceeds supported bounds",
+        ));
+    }
+    Ok(())
+}
+
 /// Parse a DAT file, auto-detecting format (XML or `ClrMamePro`).
 pub fn parse_dat<R: BufRead>(mut reader: R) -> Result<DatFile, DatError> {
-    // Peek at the first non-whitespace content to detect format
-    let mut first_bytes = Vec::new();
-    let mut buf = [0u8; 1];
+    // A small bounded probe, including a possible UTF-8 BOM. Suffixes are irrelevant.
+    let mut prefix = Vec::new();
+    let mut byte = [0; 1];
     loop {
-        let n = reader.read(&mut buf)?;
-        if n == 0 {
+        if prefix.len() >= 4096 {
+            return Err(DatError::invalid_dat(
+                "DAT leading whitespace exceeds limit",
+            ));
+        }
+        if reader.read(&mut byte)? == 0 {
             return Err(DatError::invalid_dat("Empty DAT file"));
         }
-        first_bytes.push(buf[0]);
-        if !buf[0].is_ascii_whitespace() {
+        prefix.push(byte[0]);
+        if !byte[0].is_ascii_whitespace() {
             break;
         }
     }
-
-    // Build a chained reader with the peeked bytes + remaining data
-    let chain = std::io::Cursor::new(first_bytes).chain(reader);
-    let buffered = std::io::BufReader::new(chain);
-
-    if buf[0] == b'<' {
+    if byte[0] == 0xef {
+        let mut rest = [0; 2];
+        reader.read_exact(&mut rest)?;
+        if rest != [0xbb, 0xbf] {
+            return Err(DatError::invalid_dat("Unsupported DAT encoding"));
+        }
+        prefix.clear();
+        loop {
+            if prefix.len() >= 4096 {
+                return Err(DatError::invalid_dat(
+                    "DAT leading whitespace exceeds limit",
+                ));
+            }
+            if reader.read(&mut byte)? == 0 {
+                return Err(DatError::invalid_dat("Empty DAT document"));
+            }
+            prefix.push(byte[0]);
+            if !byte[0].is_ascii_whitespace() {
+                break;
+            }
+        }
+    }
+    let buffered = std::io::BufReader::new(std::io::Cursor::new(prefix).chain(reader));
+    if byte[0] == b'<' {
         parse_xml(buffered)
     } else {
         parse_clrmamepro(buffered)
@@ -163,11 +276,14 @@ fn parse_xml_game_start(e: &quick_xml::events::BytesStart) -> Result<DatGame, Da
 }
 
 fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
-    let mut xml = Reader::from_reader(reader);
+    let mut xml = Reader::from_reader(BoundedDatReader::new(reader, true));
     xml.config_mut().trim_text(true);
 
     let mut buf = Vec::new();
     let mut dat = DatFile {
+        dialect: DatDialect::LogiqxXml,
+        author: String::new(),
+        url: String::new(),
         name: String::new(),
         description: String::new(),
         version: String::new(),
@@ -175,6 +291,8 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
     };
 
     let mut depth = 0_usize;
+    let mut saw_root = false;
+    let mut saw_header = false;
     let mut in_header = false;
     let mut current_tag = String::new();
     let mut current_game: Option<DatGame> = None;
@@ -186,15 +304,41 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
         match xml.read_event_into(&mut buf)? {
             Event::Start(ref e) => {
                 depth += 1;
+                if depth > 16 {
+                    return Err(DatError::invalid_dat("DAT XML depth exceeds 16"));
+                }
+                if depth == 1 {
+                    if saw_root || e.name().as_ref() != b"datafile" {
+                        return Err(DatError::invalid_dat("Expected one Logiqx datafile root"));
+                    }
+                    saw_root = true;
+                }
                 let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 match tag_name.as_str() {
-                    "header" => in_header = true,
+                    "header" => {
+                        if depth != 2 || saw_header {
+                            return Err(DatError::invalid_dat("Invalid or repeated DAT header"));
+                        }
+                        saw_header = true;
+                        in_header = true;
+                    }
+                    "disk" | "sample" | "machine" | "software" | "part" | "dataarea" => {
+                        return Err(DatError::Unsupported("DAT entry structure".into()));
+                    }
                     "rom" => {
+                        if depth != 3 || current_game.is_none() {
+                            return Err(DatError::invalid_dat("ROM outside a game"));
+                        }
                         if let Some(ref mut game) = current_game {
+                            check_entry_limit(dat.games.len(), game.roms.len())?;
                             game.roms.push(parse_xml_rom_attributes(e)?);
                         }
                     }
                     "game" => {
+                        if current_game.is_some() || depth != 2 {
+                            return Err(DatError::invalid_dat("Invalid game nesting"));
+                        }
+                        check_entry_limit(dat.games.len(), 0)?;
                         current_game = Some(parse_xml_game_start(e)?);
                         game_serial = None;
                         game_version = None;
@@ -205,10 +349,24 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
             }
             Event::Empty(ref e) => {
                 let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                if matches!(
+                    tag_name.as_str(),
+                    "game" | "machine" | "disk" | "sample" | "software" | "part" | "dataarea"
+                ) {
+                    return Err(if tag_name == "game" {
+                        DatError::invalid_dat("Empty DAT game entry")
+                    } else {
+                        DatError::Unsupported("DAT entry structure".into())
+                    });
+                }
+                if tag_name == "rom" && (depth != 2 || current_game.is_none()) {
+                    return Err(DatError::invalid_dat("ROM outside a game"));
+                }
                 if tag_name == "rom"
                     && let Some(ref mut game) = current_game
                 {
                     let rom = parse_xml_rom_attributes(e)?;
+                    check_entry_limit(dat.games.len(), game.roms.len())?;
                     game.roms.push(rom);
                 }
             }
@@ -218,6 +376,8 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                     match current_tag.as_str() {
                         "name" => dat.name = text,
                         "description" => dat.description = text,
+                        "author" => dat.author = text,
+                        "url" | "homepage" => dat.url = text,
                         "version" => dat.version = text,
                         _ => {}
                     }
@@ -333,6 +493,9 @@ fn parse_xml_rom_attributes(e: &quick_xml::events::BytesStart<'_>) -> Result<Dat
 /// ```
 fn parse_clrmamepro<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
     let mut dat = DatFile {
+        dialect: DatDialect::ClrMamePro,
+        author: String::new(),
+        url: String::new(),
         name: String::new(),
         description: String::new(),
         version: String::new(),
@@ -345,7 +508,7 @@ fn parse_clrmamepro<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
     let mut game_version: Option<String> = None;
     let mut game_category: Option<String> = None;
 
-    for line_result in reader.lines() {
+    for line_result in BoundedDatReader::new(reader, false).lines() {
         let line = line_result?;
         let trimmed = line.trim();
 
@@ -356,6 +519,10 @@ fn parse_clrmamepro<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
         // Detect block start: "blocktype ("
         if in_block.is_none() {
             if let Some(block_type) = detect_block_start(trimmed) {
+                if !matches!(block_type.as_str(), "game" | "clrmamepro") {
+                    return Err(DatError::Unsupported("ClrMamePro block".into()));
+                }
+                check_entry_limit(dat.games.len(), 0)?;
                 if block_type.as_str() == "game" {
                     current_game = Some(DatGame {
                         name: String::new(),
@@ -398,6 +565,14 @@ fn parse_clrmamepro<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
             continue;
         }
 
+        let mut directive = trimmed.splitn(2, char::is_whitespace);
+        if directive.next().is_some_and(|key| key != "rom")
+            && directive
+                .next()
+                .is_some_and(|rest| rest.trim_start().starts_with('('))
+        {
+            return Err(DatError::Unsupported("nested ClrMamePro block".into()));
+        }
         // A malformed ROM line must not disappear from a supposedly complete set.
         if trimmed.split_whitespace().next() == Some("rom") {
             let rest = trimmed.strip_prefix("rom").unwrap().trim();
@@ -412,6 +587,8 @@ fn parse_clrmamepro<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                 "clrmamepro" => match key.as_str() {
                     "name" => dat.name = value,
                     "description" => dat.description = value,
+                    "author" => dat.author = value,
+                    "url" | "homepage" => dat.url = value,
                     "version" => dat.version = value,
                     _ => {}
                 },
@@ -430,6 +607,7 @@ fn parse_clrmamepro<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                                 let rom = parse_clr_rom_inline(&value).ok_or_else(|| {
                                     DatError::invalid_dat("Invalid ClrMamePro ROM entry")
                                 })?;
+                                check_entry_limit(dat.games.len(), game.roms.len())?;
                                 game.roms.push(rom);
                             }
                             _ => {}

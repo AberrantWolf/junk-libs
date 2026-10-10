@@ -53,3 +53,41 @@ fn malformed_catalogs_cannot_silently_drop_files_or_trailing_games() {
     );
     assert!(junk_libs_dat::parse_dat(Cursor::new(valid.replace("crc 02 )", "crc 02"))).is_err());
 }
+
+#[test]
+fn header_metadata_and_bom_are_content_detected() {
+    let xml=b"\xef\xbb\xbf  <datafile><header><name>PSX</name><author>Redump</author><url>http://redump.org</url><version>20261010</version></header><game name=\"Game\"><rom name=\"track.bin\" size=\"2352\"/></game></datafile>";
+    let dat = parse_dat(xml.as_slice()).unwrap();
+    assert_eq!(dat.dialect, junk_libs_dat::DatDialect::LogiqxXml);
+    assert_eq!(dat.author, "Redump");
+    assert_eq!(dat.url, "http://redump.org");
+    let clr=b"  clrmamepro (\nname \"GB\"\nauthor \"No-Intro\"\nversion \"1\"\n)\ngame (\n name \"Game\"\n rom ( name \"game.gb\" size 3 )\n)\n";
+    let dat = parse_dat(clr.as_slice()).unwrap();
+    assert_eq!(dat.dialect, junk_libs_dat::DatDialect::ClrMamePro);
+    assert_eq!(dat.author, "No-Intro");
+}
+
+#[test]
+fn unsupported_entries_and_oversized_tokens_do_not_vanish() {
+    for xml in [
+        "<datafile><game name=\"No bytes\"/></datafile>",
+        "<datafile><game name=\"Disk\"><disk name=\"chd\"/></game></datafile>",
+        "<datafile><machine name=\"Machine\"/></datafile>",
+        "<datafile><game name=\"Nested\"><game name=\"Other\"/></game></datafile>",
+    ] {
+        assert!(parse_dat(xml.as_bytes()).is_err(), "{xml}");
+    }
+    let xml = format!(
+        "<datafile><header><name>{}</name></header></datafile>",
+        "x".repeat(65537)
+    );
+    assert!(parse_dat(xml.as_bytes()).is_err());
+    let clr = format!("clrmamepro (\nname \"{}\"\n)\n", "x".repeat(65537));
+    assert!(parse_dat(clr.as_bytes()).is_err());
+}
+
+#[test]
+fn clr_cannot_hide_unsupported_members_beside_valid_roms() {
+    let clr=b"clrmamepro (\nname \"GB\"\nversion 1\n)\ngame (\nname \"Game\"\nrom ( name \"game.gb\" size 3 )\ndisk ( name \"hidden\" )\n)\n";
+    assert!(parse_dat(clr.as_slice()).is_err());
+}
