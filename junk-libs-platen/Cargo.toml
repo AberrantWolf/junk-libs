@@ -18,6 +18,8 @@ required-features = ["backend-hayro", "backend-pdfium"]
 
 [dependencies]
 anyhow.workspace = true
+serde.workspace = true
+unicode-segmentation = "1.13"
 thiserror.workspace = true
 image = "0.25"
 log.workspace = true

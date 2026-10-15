@@ -9,6 +9,9 @@
 //! application data (translations, flags, …) lives in the host, keyed by
 //! [`RegionId`].
 
+mod lazy;
+pub use lazy::{CacheLimits, LazyDocument, PageInfo, PageSource, RegionInput};
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -195,23 +198,7 @@ impl Document {
             return String::new();
         };
 
-        let mut text = String::new();
-        for (ch, b) in &page.char_boxes {
-            let area = b.w * b.h;
-            let inside = if area > 0.0 {
-                intersect_area(&region.rect, b) / area >= CHAR_COVERAGE_THRESHOLD
-            } else {
-                let (cx, cy) = (b.x + b.w * 0.5, b.y + b.h * 0.5);
-                cx >= region.rect.x
-                    && cx <= region.rect.x + region.rect.w
-                    && cy >= region.rect.y
-                    && cy <= region.rect.y + region.rect.h
-            };
-            if inside {
-                text.push(*ch);
-            }
-        }
-        text
+        text_in_rect(&page.char_boxes, region.rect)
     }
 }
 
@@ -255,6 +242,74 @@ fn intersect_area(a: &Rect, b: &Rect) -> f32 {
     let x1 = (a.x + a.w).min(b.x + b.w);
     let y1 = (a.y + a.h).min(b.y + b.h);
     (x1 - x0).max(0.0) * (y1 - y0).max(0.0)
+}
+
+/// Reconstruct selected glyphs in spatial reading order, not content stream order.
+pub fn text_in_rect(boxes: &[(char, Rect)], rect: Rect) -> String {
+    text_in_rect_with_direction(
+        boxes,
+        rect,
+        junk_libs_platen::reading_order::Direction::Auto,
+    )
+}
+
+pub fn text_in_rect_with_direction(
+    boxes: &[(char, Rect)],
+    rect: Rect,
+    direction: junk_libs_platen::reading_order::Direction,
+) -> String {
+    let selected: Vec<_> = boxes
+        .iter()
+        .filter(|(_, b)| {
+            let area = b.w * b.h;
+            if area > 0.0 {
+                intersect_area(&rect, b) / area >= CHAR_COVERAGE_THRESHOLD
+            } else {
+                let (cx, cy) = (b.x + b.w * 0.5, b.y + b.h * 0.5);
+                cx >= rect.x && cx <= rect.x + rect.w && cy >= rect.y && cy <= rect.y + rect.h
+            }
+        })
+        .map(|(ch, b)| junk_libs_platen::CharBox {
+            ch: *ch,
+            x: b.x,
+            y: b.y,
+            w: b.w,
+            h: b.h,
+        })
+        .collect();
+    junk_libs_platen::reading_order::reconstruct(&selected, direction)
+}
+
+/// Intersect page-point geometry with actual pixel bounds before cropping.
+pub fn crop_rect(
+    image: &image::RgbaImage,
+    size: (f32, f32),
+    rect: Rect,
+) -> Result<image::RgbaImage> {
+    anyhow::ensure!(
+        [rect.x, rect.y, rect.w, rect.h, size.0, size.1]
+            .iter()
+            .all(|v| v.is_finite())
+            && size.0 > 0.0
+            && size.1 > 0.0
+            && rect.w > 0.0
+            && rect.h > 0.0,
+        "invalid region geometry"
+    );
+    let (sx, sy) = (
+        image.width() as f32 / size.0,
+        image.height() as f32 / size.1,
+    );
+    let x0 = (rect.x * sx).floor().clamp(0.0, image.width() as f32) as u32;
+    let y0 = (rect.y * sy).floor().clamp(0.0, image.height() as f32) as u32;
+    let x1 = ((rect.x + rect.w) * sx)
+        .ceil()
+        .clamp(0.0, image.width() as f32) as u32;
+    let y1 = ((rect.y + rect.h) * sy)
+        .ceil()
+        .clamp(0.0, image.height() as f32) as u32;
+    anyhow::ensure!(x1 > x0 && y1 > y0, "region is empty");
+    Ok(image::imageops::crop_imm(image, x0, y0, x1 - x0, y1 - y0).to_image())
 }
 
 #[cfg(test)]
@@ -305,7 +360,7 @@ mod tests {
                 h: 30.0,
             },
         );
-        assert_eq!(doc.region_text(id), "HiX");
+        assert_eq!(doc.region_text(id), "Hi X");
     }
 
     #[test]

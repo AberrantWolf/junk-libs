@@ -19,8 +19,9 @@ Use individual crates for reusable parsing, hashing, audio, rendering, and UI pr
 | `junk-libs-platen` | PDF rendering and text extraction; pure Rust by default, optional PDFium backend. |
 | `junk-libs-pdfium` | PDFium rendering and text extraction; downloads its matching native library at build time. |
 | `junk-libs-raster` | GUI-independent raster helpers. |
+| `junk-libs-text` | Unicode shaping, bidi layout, explicit font fallback and rasterization. |
 | `junk-libs-egui-docview` | Zoomable, pageable egui canvas with editable rectangular regions. |
-| `junk-libs-egui-pdfdoc` | PDF/image document model for the egui document viewer. |
+| `junk-libs-egui-pdfdoc` | Eager and bounded lazy PDF/image models for the document viewer. |
 
 ### Audio features
 

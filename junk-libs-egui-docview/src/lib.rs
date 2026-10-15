@@ -504,6 +504,22 @@ impl DocView {
             self.requested_scale = target_scale;
         }
 
+        // A lazy model can have geometry but no raster yet. Never reuse the
+        // previous page's texture with the new page's regions/coordinate system.
+        if model.page_bitmap(state.page_index).is_none() {
+            self.texture = None;
+            ui.centered_and_justified(|ui| {
+                ui.spinner();
+                ui.label("Loading page…");
+            });
+            return ViewOutput {
+                edited,
+                page_changed: initial_page != state.page_index,
+                zoom_changed: initial_zoom_mode != state.zoom_mode,
+                render_scale: target_scale,
+            };
+        }
+
         // (Re)build the texture when the page changed or its raster scale changed.
         let bitmap_scale = page_scale(&*model, state.page_index);
         if (self.texture.is_none()
@@ -1011,6 +1027,50 @@ fn decide_drag(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct DeferredPage {
+        bitmap: image::RgbaImage,
+    }
+    impl PageModel for DeferredPage {
+        fn page_count(&self) -> usize {
+            2
+        }
+        fn page_size(&self, _: usize) -> Option<(f32, f32)> {
+            Some((100.0, 100.0))
+        }
+        fn page_bitmap(&self, page: usize) -> Option<&image::RgbaImage> {
+            (page == 0).then_some(&self.bitmap)
+        }
+        fn rerender_page(&mut self, _: usize, _: f32) {}
+        fn regions_on(&self, _: usize) -> Vec<(RegionId, Rect)> {
+            Vec::new()
+        }
+        fn add_region(&mut self, _: usize, _: Rect) -> RegionId {
+            unreachable!()
+        }
+        fn region_rect_mut(&mut self, _: RegionId) -> Option<&mut Rect> {
+            None
+        }
+        fn remove_region(&mut self, _: RegionId) {}
+    }
+    #[test]
+    fn pending_page_cannot_reuse_the_previous_texture() {
+        let ctx = egui::Context::default();
+        let mut view = DocView::default();
+        let mut state = ViewState::default();
+        let mut model = DeferredPage {
+            bitmap: image::RgbaImage::from_pixel(100, 100, image::Rgba([255; 4])),
+        };
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            view.show_readonly(ui, &mut model, &mut state, |_| {});
+        });
+        assert!(view.texture.is_some());
+        state.page_index = 1;
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            view.show_readonly(ui, &mut model, &mut state, |_| {});
+        });
+        assert!(view.texture.is_none());
+    }
 
     #[test]
     fn fit_modes_resolve_against_both_viewport_axes() {

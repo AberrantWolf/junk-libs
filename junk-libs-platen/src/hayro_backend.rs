@@ -142,3 +142,32 @@ fn render_doc_page(
         scale,
     ))
 }
+
+pub fn page_sizes_from_bytes(bytes: &[u8]) -> Result<Vec<(f32, f32)>> {
+    Ok(open(bytes.to_vec())?
+        .pages()
+        .iter()
+        .map(|p| p.render_dimensions())
+        .collect())
+}
+
+pub fn render_page_from_bytes(bytes: &[u8], index: usize, scale: f32) -> Result<RenderedPage> {
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err(Error::Engine(
+            "render scale must be positive and finite".into(),
+        ));
+    }
+    let pdf = open(bytes.to_vec())?;
+    let page = pdf.pages().get(index).ok_or(Error::PageOutOfRange {
+        index,
+        count: pdf.pages().len(),
+    })?;
+    let settings = interpreter_settings();
+    let (image, size_pts) = render_page(page, &RenderCache::new(), &settings, scale);
+    let char_boxes = extract_char_boxes(page, &InterpreterCache::new(), &settings);
+    Ok(RenderedPage {
+        image,
+        size_pts,
+        char_boxes,
+    })
+}

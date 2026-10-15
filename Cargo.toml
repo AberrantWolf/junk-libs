@@ -12,6 +12,7 @@ members = [
     "junk-libs-platen",
     "junk-libs-playback",
     "junk-libs-raster",
+    "junk-libs-text",
     "junk-libs-egui-docview",
     "junk-libs-egui-pdfdoc",
 ]

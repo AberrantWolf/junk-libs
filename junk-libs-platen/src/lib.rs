@@ -39,6 +39,7 @@ mod hayro_text;
 pub mod metadata;
 #[cfg(feature = "backend-pdfium")]
 pub mod pdfium_backend;
+pub mod reading_order;
 pub use metadata::{PdfMetadata, PdfOutlineItem};
 
 #[cfg(feature = "backend-hayro")]
@@ -87,6 +88,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// the same space as the rasterized [`RenderedPage`], so boxes overlay the
 /// page image directly. Loose bounds (the full character cell, including side
 /// bearing) so adjacent chars tile cleanly into selection blocks.
+#[derive(Debug, Clone)]
 pub struct CharBox {
     pub ch: char,
     pub x: f32,
@@ -163,6 +165,18 @@ pub(crate) fn cap_scale(width_pts: f32, height_pts: f32, scale: f32) -> f32 {
         capped = max / height_pts;
     }
     capped
+}
+
+/// Displayed page sizes without rasterizing or interpreting text.
+#[cfg(feature = "backend-hayro")]
+pub fn page_sizes_from_bytes(bytes: &[u8]) -> Result<Vec<(f32, f32)>> {
+    hayro_backend::page_sizes_from_bytes(bytes)
+}
+
+/// Render and extract text for one page only. Suitable for bounded page caches.
+#[cfg(feature = "backend-hayro")]
+pub fn render_page_from_bytes(bytes: &[u8], index: usize, scale: f32) -> Result<RenderedPage> {
+    hayro_backend::render_page_from_bytes(bytes, index, scale)
 }
 
 #[cfg(test)]
