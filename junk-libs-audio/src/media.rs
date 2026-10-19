@@ -27,13 +27,15 @@ pub struct AudioDecoder {
     track_id: u32,
     track_start_ts: u64,
     pcm_format: PcmFormat,
+    pub inspection: crate::FileAudioInfo,
     total_frames: Option<u64>,
     position: FramePosition,
     buffered: VecDeque<f32>,
 }
 
 impl AudioDecoder {
-    pub fn open(source: ByteSource) -> Result<Self, AudioDecodeError> {
+    pub fn open(mut source: ByteSource) -> Result<Self, AudioDecodeError> {
+        let legacy_pictures = crate::file_audio::validate_metadata_prefix(source.reader_mut())?;
         let (reader, media_hint) = source.into_parts();
 
         let stream = MediaSourceStream::new(
@@ -44,7 +46,7 @@ impl AudioDecoder {
         if let Some(extension) = media_hint.extension.as_deref() {
             hint.with_extension(extension);
         }
-        let format_reader = symphonia::default::get_probe()
+        let mut probed = symphonia::default::get_probe()
             .format(
                 &hint,
                 stream,
@@ -53,12 +55,22 @@ impl AudioDecoder {
                     ..Default::default()
                 },
                 &MetadataOptions {
-                    limit_metadata_bytes: symphonia::core::meta::Limit::Maximum(256 * 1024),
-                    limit_visual_bytes: symphonia::core::meta::Limit::Maximum(2 * 1024 * 1024),
+                    limit_metadata_bytes: symphonia::core::meta::Limit::Maximum(32 * 1024 * 1024),
+                    limit_visual_bytes: symphonia::core::meta::Limit::Maximum(20 * 1024 * 1024),
                 },
             )
-            .map_err(AudioDecodeError::from)?
-            .format;
+            .map_err(AudioDecodeError::from)?;
+        let mut inspection = crate::FileAudioInfo::default();
+        if let Some(metadata) = probed.metadata.get().as_ref().and_then(|m| m.current()) {
+            inspection.read_metadata(metadata)?;
+        }
+        let mut format_reader = probed.format;
+        if let Some(metadata) = format_reader.metadata().current() {
+            inspection.read_metadata(metadata)?;
+        }
+        if let Some(pictures) = legacy_pictures {
+            inspection.pictures = pictures;
+        }
         let track = format_reader
             .default_track()
             .ok_or(AudioDecodeError::NoAudioTrack)?;
@@ -83,6 +95,17 @@ impl AudioDecoder {
             return Err(AudioDecodeError::UnsupportedFrameTimeBase);
         }
 
+        inspection.codec = match track.codec_params.codec {
+            symphonia::core::codecs::CODEC_TYPE_FLAC => "flac",
+            symphonia::core::codecs::CODEC_TYPE_MP3 => "mp3",
+            _ => "other",
+        }
+        .into();
+        inspection.sample_rate = sample_rate;
+        inspection.channels = channels;
+        inspection.bits_per_sample = track.codec_params.bits_per_sample;
+        inspection.delay_frames = track.codec_params.delay;
+        inspection.padding_frames = track.codec_params.padding;
         let track_id = track.id;
         let track_start_ts = track.codec_params.start_ts;
         let total_frames = track.codec_params.n_frames;
@@ -105,6 +128,7 @@ impl AudioDecoder {
             track_id,
             track_start_ts,
             pcm_format,
+            inspection,
             total_frames,
             position: FramePosition(0),
             buffered: VecDeque::new(),

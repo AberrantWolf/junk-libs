@@ -249,3 +249,8 @@ pub mod validation;
 mod sequence;
 #[cfg(all(feature = "decode-compressed", feature = "resample"))]
 pub use sequence::{SequenceSource, decode_sequence};
+
+#[cfg(any(feature = "decode-wav", feature = "decode-compressed"))]
+mod file_audio;
+#[cfg(any(feature = "decode-wav", feature = "decode-compressed"))]
+pub use file_audio::{FileAudioInfo, inspect_file_audio};
