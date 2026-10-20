@@ -403,6 +403,47 @@ mod tests {
     use lopdf::{Object, Stream, dictionary};
 
     #[test]
+    fn deeply_nested_catalog_does_not_abort() {
+        // RUSTSEC-2026-0187: construct raw bytes so the fixture itself never
+        // creates or drops a recursively nested Rust Object value.
+        let pdf = |depth: usize| {
+            let objects = [
+                format!(
+                    "<< /Type /Catalog /Pages 2 0 R /X {}0{} >>",
+                    "[".repeat(depth),
+                    "]".repeat(depth),
+                ),
+                "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] >>".to_owned(),
+            ];
+            let mut bytes = b"%PDF-1.7\n".to_vec();
+            let mut offsets = Vec::new();
+            for (index, object) in objects.iter().enumerate() {
+                offsets.push(bytes.len());
+                bytes.extend_from_slice(
+                    format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes(),
+                );
+            }
+            let xref = bytes.len();
+            bytes.extend_from_slice(b"xref\n0 4\n0000000000 65535 f \n");
+            for offset in offsets {
+                bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+            }
+            bytes.extend_from_slice(
+                format!("trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n")
+                    .as_bytes(),
+            );
+            bytes
+        };
+        assert_eq!(read_from_bytes(&pdf(3)).unwrap().page_count, 1);
+        // Lopdf may recover by discarding the malformed catalog. Either an
+        // error or an empty document is safe; a stack overflow is not.
+        if let Ok(metadata) = read_from_bytes(&pdf(10_380)) {
+            assert_eq!(metadata.page_count, 0);
+        }
+    }
+
+    #[test]
     fn label_numbering_formats() {
         assert_eq!(format_label(14, Some(b"D")), "14");
         assert_eq!(format_label(14, Some(b"r")), "xiv");
