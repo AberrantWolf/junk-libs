@@ -30,3 +30,26 @@ Synthetic tests cover sparse raw sources, independent channel/sample patterns, r
 The ignored `real_audio_raw_matches_split_bin_on_the_recording_timeline` test uses the existing Octopath b736 fixture described in `tests/fixtures/redumper/README.md`. It requires `JUNK_LIBS_REDUMPER_AUDIO_PREFIX` and verifies every sample of all 18 tracks. That fixture's known disc-write offset is zero; a nonzero offset must never be hidden by an automatically adjusted oracle. This new full comparison has not yet been run because the fixture path has not been supplied.
 
 Remaining raw work: CRC-validated Q/index reconstruction, raw HTOA range discovery, and safe mixed-mode/multisession layout support (including disc-write/variable-offset boundaries). Those cases fail explicitly or require a caller-validated low-level range; they are not advertised as supported automatic playback. Real-dump and captured-device gaplessness validation remain necessary before release.
+
+## Authorized CUE handles and conversion ranges — 2026-10-21
+
+`CueAudioDisc::from_text` accepts recorded source lengths; inspection opens no BIN
+payloads. `range_reader_with` binds an admitted audio range to caller-authorized
+seekable handles, checks their actual lengths and never opens data-only extents.
+`open`/`range_reader` remain filesystem adapters over the same mechanism. CUE text
+is bounded to 1 MiB and file/track counts to 99 before parser allocation; unknown
+playback directives, duplicate relative aliases and malformed/truncated containers
+fail explicitly. Reads remain bounded and later truncation cannot become silence.
+
+`pcm::PcmSequenceReader` joins 1–99 frozen, nonempty audio ranges into a logical
+conversion timeline. Seeking and each read stay inside their admitted ranges;
+empty/truncated members and length overflow fail. Callers retain source-coordinate
+manifests and background cancellation/publication policy.
+
+Disc/audio consumer tests passed (117 tests, six existing opt-in tests ignored),
+strict Clippy and formatting on Rust 1.99.1. A private independent oracle also
+compared all 12,705,504 audio frames of one owned three-audio-track PS1 dump and all
+10,838,016 frames of a second mixed-mode dump against direct per-file BIN ranges,
+including following stored pregaps and endpoint/backward seeks. Data tracks were
+excluded. No copyrighted payload was committed. This is extraction evidence for
+those BINARY layouts, not catalog identity or complete format qualification.
