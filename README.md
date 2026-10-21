@@ -71,3 +71,8 @@ Add overrides for other crates you edit. Active path overrides require that chec
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+`junk-libs-core::document` supplies bounded PDF-signature/UTF-8 classification and
+bounded plain-text preview reads for opaque document attachments. It does not
+parse or validate PDF structure, decompress streams or render pages. Consumers
+own upload/preview policy and authorization; original bytes remain unchanged.

@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod checksum;
 pub mod disc;
+pub mod document;
 pub mod error;
 pub mod hasher;
 pub mod read_seek;
