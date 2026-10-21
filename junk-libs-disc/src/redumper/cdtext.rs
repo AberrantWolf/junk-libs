@@ -126,7 +126,9 @@ pub fn parse_cdtext_bytes(bytes: &[u8]) -> Result<CdText, AnalysisError> {
     }
 
     let packs: Vec<Pack> = packs_bytes
-        .chunks_exact(PACK_SIZE)
+        .as_chunks::<PACK_SIZE>()
+        .0
+        .iter()
         .map(Pack::from_bytes)
         .collect();
 
@@ -179,7 +181,7 @@ struct Pack {
 }
 
 impl Pack {
-    fn from_bytes(b: &[u8]) -> Self {
+    fn from_bytes(b: &[u8; PACK_SIZE]) -> Self {
         let flags = b[3];
         let mut data = [0u8; 12];
         data.copy_from_slice(&b[4..16]);

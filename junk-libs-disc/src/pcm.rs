@@ -506,7 +506,10 @@ impl CdPcmReader for SourcePcmReader {
             })?
         ];
         source.reader.read_exact(&mut bytes)?;
-        for (frame, bytes) in output[..count].iter_mut().zip(bytes.chunks_exact(4)) {
+        for (frame, bytes) in output[..count]
+            .iter_mut()
+            .zip(bytes.as_chunks::<4>().0.iter())
+        {
             *frame = [
                 i16::from_le_bytes([bytes[0], bytes[1]]),
                 i16::from_le_bytes([bytes[2], bytes[3]]),
@@ -553,5 +556,78 @@ impl SourcePcmReader {
             frames,
             position: 0,
         })
+    }
+}
+
+/// A contiguous conversion timeline made only from explicitly admitted PCM ranges.
+/// Source readers retain their exact data/audio and gap policy. No missing frame
+/// is padded, and empty/truncated source readers cannot become successful output.
+pub struct PcmSequenceReader {
+    sources: Vec<(u64, u64, Box<dyn CdPcmReader + Send>)>,
+    frames: u64,
+    position: u64,
+}
+impl PcmSequenceReader {
+    pub fn new(readers: Vec<Box<dyn CdPcmReader + Send>>) -> Result<Self, AnalysisError> {
+        if readers.is_empty() || readers.len() > 99 {
+            return Err(AnalysisError::invalid_format(
+                "PCM sequence needs 1–99 ranges",
+            ));
+        }
+        let mut frames = 0u64;
+        let mut sources = Vec::with_capacity(readers.len());
+        for reader in readers {
+            let length = reader.total_frames();
+            if length == 0 {
+                return Err(AnalysisError::invalid_format("empty PCM sequence member"));
+            }
+            let start = frames;
+            frames = frames
+                .checked_add(length)
+                .ok_or_else(|| AnalysisError::invalid_format("PCM sequence overflow"))?;
+            sources.push((start, length, reader));
+        }
+        Ok(Self {
+            sources,
+            frames,
+            position: 0,
+        })
+    }
+}
+impl CdPcmReader for PcmSequenceReader {
+    fn total_frames(&self) -> u64 {
+        self.frames
+    }
+    fn seek_frame(&mut self, frame: u64) -> Result<(), AnalysisError> {
+        if frame > self.frames {
+            return Err(AnalysisError::invalid_format("seek beyond PCM sequence"));
+        }
+        self.position = frame;
+        Ok(())
+    }
+    fn read_frames(&mut self, out: &mut [[i16; 2]]) -> Result<usize, AnalysisError> {
+        if out.is_empty() || self.position == self.frames {
+            return Ok(0);
+        }
+        let (start, length, reader) = self
+            .sources
+            .iter_mut()
+            .rev()
+            .find(|(start, _, _)| *start <= self.position)
+            .ok_or_else(|| AnalysisError::invalid_format("PCM sequence range absent"))?;
+        let offset = self.position - *start;
+        let remaining = length
+            .checked_sub(offset)
+            .ok_or_else(|| AnalysisError::invalid_format("PCM sequence member changed"))?;
+        let count = out.len().min(16384).min(remaining.min(16384) as usize);
+        reader.seek_frame(offset)?;
+        let read = reader.read_frames(&mut out[..count])?;
+        if read == 0 || read > count {
+            return Err(AnalysisError::invalid_format(
+                "PCM sequence member ended or exceeded its range",
+            ));
+        }
+        self.position += read as u64;
+        Ok(read)
     }
 }

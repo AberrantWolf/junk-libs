@@ -83,3 +83,77 @@ fn malformed_gaps_indexes_and_four_channel_flags_are_rejected() {
         assert!(CueAudioDisc::open(&path).is_err(), "{directives}");
     }
 }
+
+#[test]
+fn authorized_handles_keep_mixed_mode_data_out_and_bind_source_lengths() {
+    use std::io::Cursor;
+    let cue = "FILE \"data.bin\" BINARY\n TRACK 01 MODE2/2352\n INDEX 01 00:00:00\nFILE \"audio.bin\" BINARY\n TRACK 02 AUDIO\n INDEX 00 00:00:00\n INDEX 01 00:00:01\n TRACK 03 AUDIO\n INDEX 00 00:00:02\n INDEX 01 00:00:03\n";
+    let disc = CueAudioDisc::from_text(cue, |_| Ok(4 * 2352)).unwrap();
+    let pcm = [11i16, 22, 33, 44]
+        .into_iter()
+        .flat_map(|v| [v.to_le_bytes(), (-v).to_le_bytes()].concat().repeat(588))
+        .collect::<Vec<_>>();
+    let second = &disc.tracks[1];
+    let mut calls = 0;
+    let reader = disc
+        .range_reader_with(second.start_frame, second.end_frame, |name| {
+            assert_eq!(name.to_str(), Some("audio.bin")); // Never obtains a data-file handle.
+            calls += 1;
+            Ok(Box::new(Cursor::new(pcm.clone())))
+        })
+        .unwrap();
+    assert_eq!(calls, 1);
+    let output = collect(reader);
+    assert_eq!(output.len(), 2 * 588);
+    assert!(output[..588].iter().all(|f| *f == [22, -22]));
+    assert!(output[588..].iter().all(|f| *f == [33, -33]));
+    assert!(
+        disc.range_reader_with(second.start_frame, second.end_frame, |_| Ok(Box::new(
+            Cursor::new(pcm[..pcm.len() - 4].to_vec())
+        )))
+        .is_err()
+    );
+    assert!(
+        disc.range_reader_with(
+            disc.tracks[0].start_frame,
+            disc.tracks[0].end_frame,
+            |_| panic!("data reader opened")
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn reader_geometry_rejects_aliases_truncation_and_oversized_sidecars() {
+    for cue in [
+        "FILE \"one.bin\" BINARY\n TRACK 01 AUDIO\n INDEX 01 00:00:00\n SILENCE 00:00:01\n",
+        "TRACK 01 AUDIO\nFILE \"one.bin\" BINARY\n INDEX 01 00:00:00\n",
+        "FILE \"one.bin\" BINARY\n TRACK 01 AUDIO\n INDEX 01 00:00:00\nFILE \"./one.bin\" BINARY\n TRACK 02 AUDIO\n INDEX 01 00:00:00\n",
+        "FILE \"../one.bin\" BINARY\n TRACK 01 AUDIO\n INDEX 01 00:00:00\n",
+        "FILE \"one.bin\" BINARY\n TRACK 01 AUDIO\n INDEX 01 00:00:01\n",
+    ] {
+        assert!(CueAudioDisc::from_text(cue, |_| Ok(2352)).is_err());
+    }
+    assert!(CueAudioDisc::from_text(&" ".repeat(1024 * 1024 + 1), |_| unreachable!()).is_err());
+    // Smallest supported program: one complete audio sector.
+    let disc = CueAudioDisc::from_text(
+        "FILE \"one.bin\" BINARY\n TRACK 01 AUDIO\n INDEX 01 00:00:00\n",
+        |_| Ok(2352),
+    )
+    .unwrap();
+    let track = &disc.tracks[0];
+    assert_eq!(track.end_frame - track.start_frame, 588);
+}
+
+#[test]
+fn truncation_after_binding_is_an_error_and_reads_stay_bounded() {
+    let (dir, path) = fixture("FILE \"one.bin\" BINARY\n TRACK 01 AUDIO\n INDEX 01 00:00:00\n");
+    let disc = CueAudioDisc::open(&path).unwrap();
+    let mut reader = disc.track_reader(1).unwrap();
+    let file = dir.path().join("one.bin");
+    let bytes = std::fs::read(&file).unwrap();
+    std::fs::write(file, &bytes[..2352]).unwrap();
+    let mut out = vec![[0; 2]; 10000];
+    assert_eq!(reader.read_frames(&mut out).unwrap(), 588);
+    assert!(reader.read_frames(&mut out).is_err());
+}

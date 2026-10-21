@@ -41,7 +41,7 @@ pub fn parse_audio_toc(bytes: &[u8]) -> Result<Vec<RawAudioTrack>, AnalysisError
         return Err(bad());
     }
     let mut points = Vec::new();
-    for d in bytes[4..].chunks_exact(8) {
+    for d in bytes[4..].as_chunks::<8>().0.iter() {
         if d[1] >> 4 != 1 {
             return Err(bad());
         }

@@ -8,7 +8,7 @@ use junk_libs_core::AnalysisError;
 use std::{
     collections::BTreeMap,
     fs::File,
-    io::{BufReader, Read, Seek},
+    io::{BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
 
@@ -38,6 +38,7 @@ pub struct CueAudioDisc {
     /// First-track audio before INDEX 01, including synthetic silence. Not queued implicitly.
     pub hidden_audio: Option<(u64, u64)>,
     extents: Vec<Extent>,
+    source_lengths: BTreeMap<PathBuf, u64>,
 }
 #[derive(Default)]
 struct Extras {
@@ -62,16 +63,88 @@ fn timestamp(s: &str) -> Result<u64, AnalysisError> {
 }
 impl CueAudioDisc {
     pub fn open(path: &Path) -> Result<Self, AnalysisError> {
-        let text = std::fs::read_to_string(path)?;
+        let mut file = File::open(path)?;
+        let mut text = String::new();
+        file.by_ref()
+            .take(1024 * 1024 + 1)
+            .read_to_string(&mut text)?;
         let dir = path.parent().unwrap_or(Path::new("."));
+        let mut disc = Self::from_text(&text, |name| {
+            Ok(std::fs::metadata(cue::resolve_local_file(dir, name)?)?.len())
+        })?;
+        let mut resolved = BTreeMap::new();
+        for (name, length) in &disc.source_lengths {
+            resolved.insert(
+                cue::resolve_local_file(
+                    dir,
+                    name.to_str()
+                        .ok_or_else(|| invalid("CUE filename is not UTF-8"))?,
+                )?,
+                *length,
+            );
+        }
+        for extent in &mut disc.extents {
+            if let Some((name, _)) = &mut extent.file {
+                *name = cue::resolve_local_file(
+                    dir,
+                    name.to_str()
+                        .ok_or_else(|| invalid("CUE filename is not UTF-8"))?,
+                )?;
+            }
+        }
+        disc.source_lengths = resolved;
+        Ok(disc)
+    }
+
+    /// Inspect standard CUE geometry using recorded lengths, without opening payloads.
+    /// Names remain relative identifiers for a caller-supplied authorized reader.
+    pub fn from_text(
+        text: &str,
+        size: impl Fn(&str) -> Result<u64, AnalysisError>,
+    ) -> Result<Self, AnalysisError> {
+        if text.len() > 1024 * 1024 {
+            return Err(invalid("CUE exceeds 1 MiB"));
+        }
+        let mut have_file = false;
+        let (mut file_count, mut track_count) = (0usize, 0usize);
+        for line in text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with("//"))
+        {
+            let word = line.split_whitespace().next().unwrap().to_ascii_uppercase();
+            match word.as_str() {
+                "FILE" => {
+                    have_file = true;
+                    file_count += 1;
+                    if file_count > 99 {
+                        return Err(invalid("CUE exceeds 99 files"));
+                    }
+                }
+                "TRACK" if !have_file => return Err(invalid("CUE TRACK precedes FILE")),
+                "TRACK" => {
+                    track_count += 1;
+                    if track_count > 99 {
+                        return Err(invalid("CUE exceeds 99 tracks"));
+                    }
+                }
+                "INDEX" | "PREGAP" | "POSTGAP" | "FLAGS" | "REM" | "TITLE" | "PERFORMER"
+                | "SONGWRITER" | "CATALOG" | "ISRC" | "CDTEXTFILE" => {}
+                _ => {
+                    return Err(AnalysisError::unsupported(format!(
+                        "CUE playback directive {word}"
+                    )));
+                }
+            }
+        }
         // Do not silently discard nonstandard directives which affect audio placement.
         // Existing legacy sector reader remains available to non-playback consumers.
-        if !cue::check_cue_compat(&text).is_standard() {
+        if !cue::check_cue_compat(text).is_standard() {
             return Err(AnalysisError::unsupported(
                 "playback layout requires a standard BIN/CUE sheet",
             ));
         }
-        let sheet = cue::parse_cue(&text)?;
+        let sheet = cue::parse_cue(text)?;
         if sheet
             .files
             .iter()
@@ -82,8 +155,38 @@ impl CueAudioDisc {
             return Err(invalid("CUE index timestamp out of range"));
         }
 
+        if sheet.files.len() > 99 || sheet.files.iter().map(|f| f.tracks.len()).sum::<usize>() > 99
+        {
+            return Err(invalid("CUE exceeds 99 files/tracks"));
+        }
+        let mut source_lengths = BTreeMap::new();
+        let mut names = std::collections::BTreeSet::new();
+        for file in &sheet.files {
+            let path = Path::new(&file.filename);
+            if path.is_absolute()
+                || path.components().any(|p| {
+                    matches!(
+                        p,
+                        std::path::Component::ParentDir | std::path::Component::Prefix(_)
+                    )
+                })
+            {
+                return Err(invalid("CUE filename must stay relative to its package"));
+            }
+            let normalized = path
+                .components()
+                .filter(|p| !matches!(p, std::path::Component::CurDir))
+                .collect::<PathBuf>();
+            if normalized.as_os_str().is_empty() || !names.insert(normalized) {
+                return Err(invalid("duplicate or aliased CUE filename"));
+            }
+            source_lengths.insert(path.to_owned(), size(&file.filename)?);
+        }
         let resolved = cue::compute_cue_resolved_layout(&sheet, |name| {
-            Ok(std::fs::metadata(cue::resolve_local_file(dir, name)?)?.len())
+            source_lengths
+                .get(Path::new(name))
+                .copied()
+                .ok_or_else(|| invalid("CUE source length absent"))
         })?;
         let mut extras = BTreeMap::<u8, Extras>::new();
         let mut current = None;
@@ -141,11 +244,12 @@ impl CueAudioDisc {
             tracks: vec![],
             hidden_audio: None,
             extents: vec![],
+            source_lengths,
         };
         let mut position = 0;
         let mut beginnings = Vec::new();
         for (file, source) in sheet.files.iter().zip(&resolved.files) {
-            let path = cue::resolve_local_file(dir, &file.filename)?;
+            let path = PathBuf::from(&file.filename);
             for (i, track) in file.tracks.iter().enumerate() {
                 let kind = classify_mode(&track.mode);
                 let audio = kind == TrackKind::Audio;
@@ -271,7 +375,21 @@ impl CueAudioDisc {
         self.range_reader(t.start_frame, t.end_frame)
     }
     pub fn range_reader(&self, start: u64, end: u64) -> Result<CueAudioReader, AnalysisError> {
-        if start > end
+        self.range_reader_with(start, end, |name| {
+            Ok(Box::new(BufReader::new(File::open(name)?)))
+        })
+    }
+
+    /// Bind a previously inspected audio range to authorized, seekable byte handles.
+    /// Payloads are not read here. Actual source length is checked before playback;
+    /// later truncation is an error during bounded reads, never synthesized silence.
+    pub fn range_reader_with(
+        &self,
+        start: u64,
+        end: u64,
+        mut open: impl FnMut(&Path) -> Result<Box<dyn junk_libs_core::ReadSeek + Send>, AnalysisError>,
+    ) -> Result<CueAudioReader, AnalysisError> {
+        if start >= end
             || end > self.extents.last().map(|e| e.end).unwrap_or(0)
             || self
                 .extents
@@ -280,12 +398,28 @@ impl CueAudioDisc {
         {
             return Err(invalid("range includes non-audio or lies outside CUE"));
         }
+        let mut readers = BTreeMap::new();
+        for extent in self
+            .extents
+            .iter()
+            .filter(|e| e.start < end && e.end > start)
+        {
+            if let Some((name, _)) = &extent.file
+                && !readers.contains_key(name)
+            {
+                let mut reader = open(name)?;
+                if reader.seek(SeekFrom::End(0))? != self.source_lengths[name] {
+                    return Err(invalid("CUE source length changed"));
+                }
+                readers.insert(name.clone(), reader);
+            }
+        }
         Ok(CueAudioReader {
             extents: self.extents.clone(),
             start,
             length: end - start,
             position: 0,
-            current: None,
+            readers,
         })
     }
 }
@@ -294,7 +428,7 @@ pub struct CueAudioReader {
     start: u64,
     length: u64,
     position: u64,
-    current: Option<(PathBuf, BufReader<File>)>,
+    readers: BTreeMap<PathBuf, Box<dyn junk_libs_core::ReadSeek + Send>>,
 }
 impl CueAudioReader {
     pub fn total_frames(&self) -> u64 {
@@ -325,16 +459,18 @@ impl CueAudioReader {
             .min(588)
             .min((e.end - absolute).min(self.length - self.position).min(588) as usize);
         if let Some((path, offset)) = &e.file {
-            if self.current.as_ref().is_none_or(|(p, _)| p != path) {
-                self.current = Some((path.clone(), BufReader::new(File::open(path)?)));
-            }
-            let r = &mut self.current.as_mut().unwrap().1;
-            let target = offset + (absolute - e.start) * 4;
-            let current = r.stream_position()?;
-            r.seek_relative(target as i64 - current as i64)?;
+            let reader = self
+                .readers
+                .get_mut(path)
+                .ok_or_else(|| invalid("CUE source handle absent"))?;
+            let target = (absolute - e.start)
+                .checked_mul(4)
+                .and_then(|n| offset.checked_add(n))
+                .ok_or_else(|| invalid("CUE byte offset overflow"))?;
+            reader.seek(SeekFrom::Start(target))?;
             let mut bytes = [0; 2352];
-            r.read_exact(&mut bytes[..n * 4])?;
-            for (o, b) in out[..n].iter_mut().zip(bytes.chunks_exact(4)) {
+            reader.read_exact(&mut bytes[..n * 4])?;
+            for (o, b) in out[..n].iter_mut().zip(bytes.as_chunks::<4>().0.iter()) {
                 *o = [
                     i16::from_le_bytes([b[0], b[1]]),
                     i16::from_le_bytes([b[2], b[3]]),
