@@ -48,6 +48,18 @@ cargo fmt --all -- --check
 
 Some real-dump and external-tool tests are explicitly ignored unless their fixtures are provisioned.
 
+### DAT parser security update (2026-10-25)
+
+`junk-libs-dat` uses quick-xml 0.41, fixing RUSTSEC-2026-0194/0195. XML text
+fragments, predefined/numeric entity events and CDATA are joined before trimming,
+with a 64 KiB accumulated-value bound. Attributes retain duplicate checking and
+use the nondeprecated normalized-value API. User-defined DTD entities are not
+expanded; unknown/malformed references fail parsing. Existing input/token/depth
+and entry limits remain in force. Neutral DAT records and consumer authority are
+unchanged. Run `cargo test -p junk-libs-dat --all-features --locked` and its
+all-targets Clippy check for focused parser acceptance; consumers must also qualify
+their catalog import workflows before adopting the new Git revision.
+
 ## Use in another workspace
 
 Depend on individual crates from Git; pin a `rev` or an existing `tag` for reproducible builds:

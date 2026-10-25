@@ -253,7 +253,9 @@ pub fn parse_logiqx_rom_lines(text: &str) -> Result<Vec<DatRom>, DatError> {
 fn attribute_text(
     attr: &quick_xml::events::attributes::Attribute<'_>,
 ) -> Result<String, quick_xml::Error> {
-    Ok(attr.unescape_value()?.into_owned())
+    Ok(attr
+        .normalized_value(quick_xml::XmlVersion::Implicit1_0)?
+        .into_owned())
 }
 
 /// Build a fresh [`DatGame`] from a `<game>` start tag's attributes.
@@ -277,7 +279,6 @@ fn parse_xml_game_start(e: &quick_xml::events::BytesStart) -> Result<DatGame, Da
 
 fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
     let mut xml = Reader::from_reader(BoundedDatReader::new(reader, true));
-    xml.config_mut().trim_text(true);
 
     let mut buf = Vec::new();
     let mut dat = DatFile {
@@ -295,6 +296,7 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
     let mut saw_header = false;
     let mut in_header = false;
     let mut current_tag = String::new();
+    let mut current_text = String::new();
     let mut current_game: Option<DatGame> = None;
     let mut game_serial: Option<String> = None;
     let mut game_version: Option<String> = None;
@@ -303,6 +305,7 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
     loop {
         match xml.read_event_into(&mut buf)? {
             Event::Start(ref e) => {
+                current_text.clear();
                 depth += 1;
                 if depth > 16 {
                     return Err(DatError::invalid_dat("DAT XML depth exceeds 16"));
@@ -348,6 +351,7 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                 }
             }
             Event::Empty(ref e) => {
+                current_text.clear();
                 let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 if matches!(
                     tag_name.as_str(),
@@ -371,7 +375,29 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                 }
             }
             Event::Text(ref e) => {
-                let text = e.unescape()?.to_string();
+                append_xml_text(
+                    &mut current_text,
+                    &e.decode().map_err(quick_xml::Error::from)?,
+                )?;
+            }
+            Event::CData(ref e) => {
+                append_xml_text(
+                    &mut current_text,
+                    &e.decode().map_err(quick_xml::Error::from)?,
+                )?;
+            }
+            Event::GeneralRef(ref e) => {
+                // Since quick-xml 0.38, references are separate events. Resolve
+                // predefined/numeric entities once, never user-defined DTD entities.
+                let reference = e.decode().map_err(quick_xml::Error::from)?;
+                let escaped = format!("&{reference};");
+                let text = quick_xml::escape::unescape(&escaped).map_err(quick_xml::Error::from)?;
+                append_xml_text(&mut current_text, &text)?;
+            }
+            Event::End(ref e) => {
+                // Trim only after joining events, preserving spaces around
+                // entity references and CDATA boundaries within one value.
+                let text = current_text.trim().to_owned();
                 if in_header {
                     match current_tag.as_str() {
                         "name" => dat.name = text,
@@ -389,8 +415,7 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                         _ => {}
                     }
                 }
-            }
-            Event::End(ref e) => {
+                current_text.clear();
                 depth = depth
                     .checked_sub(1)
                     .ok_or_else(|| DatError::invalid_dat("Unexpected closing element"))?;
@@ -435,6 +460,14 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
     }
 
     Ok(dat)
+}
+
+fn append_xml_text(text: &mut String, fragment: &str) -> Result<(), DatError> {
+    if fragment.len() > (64 * 1024_usize).saturating_sub(text.len()) {
+        return Err(DatError::invalid_dat("DAT XML text exceeds 64 KiB"));
+    }
+    text.push_str(fragment);
+    Ok(())
 }
 
 fn parse_xml_rom_attributes(e: &quick_xml::events::BytesStart<'_>) -> Result<DatRom, DatError> {

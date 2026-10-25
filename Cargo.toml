@@ -48,6 +48,6 @@ md5 = "0.7"
 base64 = "0.22"
 chd = "0.3"
 log = { version = "0.4", features = ["std"] }
-quick-xml = "0.37"
+quick-xml = "0.41"
 lopdf = { version = "0.44", default-features = false }
 tempfile = "3"
