@@ -165,3 +165,25 @@ fn split_xml_text_cannot_bypass_the_value_bound() {
     );
     assert!(parse_dat(xml.as_bytes()).is_err());
 }
+
+#[test]
+fn delimiters_inside_xml_events_cannot_bypass_the_read_bound() {
+    let padding = ">".repeat(65537);
+    let attribute = format!(
+        "<datafile><header><name>System</name></header><game name=\"Game\" padding=\"{padding}\"><rom name=\"one\" size=\"1\"/></game></datafile>"
+    );
+    assert!(parse_dat(attribute.as_bytes()).is_err());
+
+    // Comments are ignored by the DAT consumer, so a post-event value-size
+    // check cannot protect the XML parser's allocation here.
+    let comment = format!(
+        "<datafile><header><name>System</name></header><!--{}--></datafile>",
+        "<>".repeat(65537)
+    );
+    assert!(parse_dat(comment.as_bytes()).is_err());
+    let cdata = format!(
+        "<datafile><header><name><![CDATA[{}]]></name></header></datafile>",
+        "<>".repeat(65537)
+    );
+    assert!(parse_dat(cdata.as_bytes()).is_err());
+}

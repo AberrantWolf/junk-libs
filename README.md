@@ -60,6 +60,11 @@ unchanged. Run `cargo test -p junk-libs-dat --all-features --locked` and its
 all-targets Clippy check for focused parser acceptance; consumers must also qualify
 their catalog import workflows before adopting the new Git revision.
 
+The 2026-10-25 security review additionally enforces the XML read cap per parser
+event before buffering, rather than resetting on literal delimiter bytes.
+Oversized quoted attributes, comments and CDATA cannot bypass that cap with
+embedded `<` or `>` characters. The accumulated decoded-value cap remains separate.
+
 ### CHD decoder security update (2026-10-25)
 
 Shared crates require `chd >=0.3.5, <0.4`, bringing in `ruzstd >=0.9.1` for

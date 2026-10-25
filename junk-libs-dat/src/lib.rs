@@ -115,30 +115,31 @@ impl<R: BufRead> BufRead for BoundedDatReader<R> {
         {
             return Err(std::io::Error::other("DAT exceeds 64 MiB"));
         }
+        if self.xml {
+            let remaining = (64 * 1024_usize).saturating_sub(self.segment);
+            if remaining == 0 && !bytes.is_empty() {
+                return Err(std::io::Error::other("DAT XML event exceeds 64 KiB"));
+            }
+            return Ok(&bytes[..bytes.len().min(remaining)]);
+        }
         for byte in bytes {
             segment += 1;
             if segment > 64 * 1024 {
                 return Err(std::io::Error::other("DAT token or line exceeds 64 KiB"));
             }
-            if if self.xml {
-                *byte == b'<' || *byte == b'>'
-            } else {
-                *byte == b'\n'
-            } {
+            if *byte == b'\n' {
                 segment = 0;
             }
         }
         Ok(bytes)
     }
     fn consume(&mut self, count: usize) {
-        if let Ok(bytes) = self.inner.fill_buf() {
+        if self.xml {
+            self.segment += count;
+        } else if let Ok(bytes) = self.inner.fill_buf() {
             for byte in &bytes[..count] {
                 self.segment += 1;
-                if if self.xml {
-                    *byte == b'<' || *byte == b'>'
-                } else {
-                    *byte == b'\n'
-                } {
+                if *byte == b'\n' {
                     self.segment = 0;
                 }
             }
@@ -303,6 +304,9 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
     let mut game_category: Option<String> = None;
 
     loop {
+        // Reset at parser event boundaries, never on delimiter bytes that may
+        // appear inside an attribute, comment, CDATA or declaration.
+        xml.get_mut().segment = 0;
         match xml.read_event_into(&mut buf)? {
             Event::Start(ref e) => {
                 current_text.clear();
