@@ -60,6 +60,17 @@ unchanged. Run `cargo test -p junk-libs-dat --all-features --locked` and its
 all-targets Clippy check for focused parser acceptance; consumers must also qualify
 their catalog import workflows before adopting the new Git revision.
 
+### CHD decoder security update (2026-10-25)
+
+Shared crates require `chd >=0.3.5, <0.4`, bringing in `ruzstd >=0.9.1` for
+RUSTSEC-2026-0344. No decoder fork or replacement format mechanism is introduced.
+The explicitly provisioned chdman 0.285 oracle exercises `cdzl`, `cdzs` and `zstd`
+compression on the same generated mixed data/audio source, checks every unpadded
+raw-track digest and rejects truncated CHDs. Run it with
+`cargo test -p junk-libs-game-formats --features chd --test chd_oracle --locked -- --ignored`.
+These generated vectors qualify codec/byte preservation, not drive or catalog
+verification, and do not constitute a full decompression-bomb reproduction.
+
 ## Use in another workspace
 
 Depend on individual crates from Git; pin a `rev` or an existing `tag` for reproducible builds:
