@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "junk-libs-core",
+    "junk-libs-music",
     "junk-libs-accuraterip",
     "junk-libs-audio",
     "junk-libs-disc",
@@ -23,6 +24,7 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
+junk-libs-music = { path = "junk-libs-music" }
 junk-libs-core = { path = "junk-libs-core" }
 junk-libs-accuraterip = { path = "junk-libs-accuraterip" }
 junk-libs-audio = { path = "junk-libs-audio" }

@@ -14,6 +14,7 @@ Use individual crates for reusable parsing, hashing, audio, rendering, and UI pr
 | `junk-libs-accuraterip` | AccurateRip v1/v2 checksums, dBAR parsing, matching, and bounded sample-offset search. |
 | `junk-libs-dat` | Streaming Logiqx XML and ClrMamePro DAT parsing. |
 | `junk-libs-game-formats` | Reader-based game-dump inspection, normalization, and hashing. |
+| `junk-libs-music` | Cancellable FLAC/MP3 fingerprints, community MusicBrainz models, AcoustID response decoding and one-to-one album comparison. |
 | `junk-libs-audio` | Opaque byte sources, PCM frame coordinates, decoding, resampling, DSP, and derivative validation. |
 | `junk-libs-playback` | Consumer-owned queue keys, deterministic transitions, and generation-fenced seeking. |
 | `junk-libs-platen` | PDF rendering and text extraction; pure Rust by default, optional PDFium backend. |
