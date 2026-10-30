@@ -31,3 +31,12 @@ upstream license and comply with its distribution obligations in applications.
 Run `cargo test -p junk-libs-music --all-features` and package Clippy with all
 features/targets. Real generated FLAC/MP3 fixtures exercise decoding, cancellation,
 truncation and inconsistent lengths. Provider and assignment tests are offline.
+
+## Review follow-up — 2026-10-30
+
+Completeness requires contiguous medium/track positions, and duplicate or zero
+medium positions fail closed. Provider decoding rejects malformed track identities,
+positions and text, and successful AcoustID envelopes must include a results array.
+An explicitly empty track credit falls back to the recording credit. Searchability
+also requires a valid fingerprint envelope. Exhaustive independent enumeration of
+all 512 three-by-three recording graphs checks cardinality and ambiguity.

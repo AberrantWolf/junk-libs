@@ -76,15 +76,23 @@ pub fn compare(
     let mut positions = BTreeSet::new();
     let mut complete = true;
     let mut declared = 0usize;
+    let mut media_positions = BTreeSet::new();
     for m in &release.media {
+        checkpoint()?;
+        if let Some(position) = m.position
+            && (position == 0 || !media_positions.insert(position))
+        {
+            return Err(Error::Invalid("duplicate/zero medium position".into()));
+        }
         declared = declared
             .checked_add(m.track_count as usize)
             .ok_or_else(|| Error::Invalid("track count".into()))?;
         complete &= m.position.is_some() && m.track_count as usize == m.tracks.len();
+        let mut track_positions = BTreeSet::new();
         for t in &m.tracks {
+            track_positions.insert(t.position);
             if slots.len() >= MAX_TRACKS
                 || t.position == 0
-                || m.position == Some(0)
                 || !positions.insert((m.position, t.position))
                 || t.recording_id.as_deref().is_some_and(|r| !valid_mbid(r))
                 || !text(&t.title)
@@ -94,7 +102,15 @@ pub fn compare(
             }
             slots.push((m.position.unwrap_or(0), t));
         }
+        complete &= track_positions
+            .iter()
+            .map(|position| u32::from(*position))
+            .eq(1..=m.track_count);
     }
+    complete &= media_positions
+        .iter()
+        .copied()
+        .eq(1..=release.media.len() as u16);
     let mut edges = Vec::new();
     for t in local {
         checkpoint()?;
@@ -328,6 +344,63 @@ mod tests {
         }
     }
     #[test]
+    fn assignments_and_ambiguity_agree_with_exhaustive_three_by_three_graphs() {
+        fn enumerate(
+            edges: &[Vec<usize>],
+            row: usize,
+            used: u8,
+            count: usize,
+            best: &mut usize,
+            ways: &mut usize,
+        ) {
+            if row == edges.len() {
+                if count > *best {
+                    *best = count;
+                    *ways = 1;
+                } else if count == *best {
+                    *ways += 1;
+                }
+                return;
+            }
+            enumerate(edges, row + 1, used, count, best, ways);
+            for &slot in &edges[row] {
+                if used & (1 << slot) == 0 {
+                    enumerate(edges, row + 1, used | (1 << slot), count + 1, best, ways);
+                }
+            }
+        }
+        let mut r = release();
+        r.media[0].track_count = 3;
+        let mut third = r.media[0].tracks[0].clone();
+        third.position = 3;
+        third.recording_id = Some(id(3));
+        r.media[0].tracks.push(third);
+        for mask in 0..512u16 {
+            let edges: Vec<Vec<usize>> = (0..3)
+                .map(|row| {
+                    (0..3)
+                        .filter(|slot| mask & (1 << (row * 3 + slot)) != 0)
+                        .collect()
+                })
+                .collect();
+            let locals: Vec<_> = edges
+                .iter()
+                .enumerate()
+                .map(|(row, links)| {
+                    local(
+                        &row.to_string(),
+                        &links.iter().map(|slot| *slot as u8 + 1).collect::<Vec<_>>(),
+                    )
+                })
+                .collect();
+            let (mut best, mut ways) = (0, 0);
+            enumerate(&edges, 0, 0, 0, &mut best, &mut ways);
+            let compared = compare(&locals, &r, &mut || Ok(())).unwrap();
+            assert_eq!(compared.mappings.len(), best, "graph {mask}");
+            assert_eq!(compared.ambiguous_mapping, ways > 1, "graph {mask}");
+        }
+    }
+    #[test]
     fn augmenting_path_avoids_greedy_loss() {
         let m = compare(
             &[local("a", &[1, 2]), local("b", &[1])],
@@ -361,6 +434,34 @@ mod tests {
         let m = compare(&[local("a", &[1])], &r, &mut || Ok(())).unwrap();
         assert!(!m.complete_tracklist);
         assert_eq!(m.release_tracks, 3);
+    }
+    #[test]
+    fn gaps_in_track_or_medium_positions_are_not_complete() {
+        let mut r = release();
+        r.media[0].tracks[1].position = 3;
+        assert!(
+            !compare(&[local("a", &[1]), local("b", &[2])], &r, &mut || Ok(()))
+                .unwrap()
+                .complete_tracklist
+        );
+        r.media[0].tracks[1].position = 2;
+        r.media[0].position = Some(2);
+        assert!(
+            !compare(&[local("a", &[1]), local("b", &[2])], &r, &mut || Ok(()))
+                .unwrap()
+                .complete_tracklist
+        );
+    }
+    #[test]
+    fn duplicate_or_zero_medium_positions_fail_even_without_duplicate_track_slots() {
+        let mut r = release();
+        let mut second = r.media[0].clone();
+        second.tracks.clear();
+        second.track_count = 0;
+        r.media.push(second);
+        assert!(compare(&[local("a", &[1])], &r, &mut || Ok(())).is_err());
+        r.media[1].position = Some(0);
+        assert!(compare(&[local("a", &[1])], &r, &mut || Ok(())).is_err());
     }
     #[test]
     fn cancellation_interrupts_matching() {

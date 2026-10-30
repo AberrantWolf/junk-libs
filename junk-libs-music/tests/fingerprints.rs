@@ -63,4 +63,8 @@ fn truncated_flac_and_inconsistent_envelopes_fail() {
     let mut a = compute(source(bytes, "flac"), &mut || Ok(())).unwrap();
     a.decoded_frames += 1;
     assert!(a.validate().is_err());
+    assert!(
+        !a.usable(),
+        "inconsistent coordinates cannot be advertised as searchable"
+    );
 }

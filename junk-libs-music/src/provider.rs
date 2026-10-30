@@ -3,7 +3,7 @@
 use crate::*;
 use musicbrainz_rs::entity::release::Release as MbRelease;
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub fn release_url(id: &str) -> Result<url::Url> {
     if !valid_mbid(id) {
@@ -109,7 +109,14 @@ fn convert(r: MbRelease) -> Result<Release> {
         .and_then(|v| v.as_str().map(str::to_owned));
     let mut count = 0usize;
     let mut media = Vec::new();
+    let mut media_positions = BTreeSet::new();
     for m in r.media.unwrap_or_default() {
+        if m.position
+            .is_some_and(|position| position == 0 || !media_positions.insert(position))
+        {
+            return Err(Error::Invalid("duplicate/zero medium position".into()));
+        }
+        let mut track_positions = BTreeSet::new();
         let mut tracks = Vec::new();
         for t in m.tracks.unwrap_or_default() {
             count += 1;
@@ -126,15 +133,33 @@ fn convert(r: MbRelease) -> Result<Release> {
             } else {
                 t.title
             };
+            if t.position == 0
+                || !track_positions.insert(t.position)
+                || !text(&title)
+                || t.recording
+                    .as_ref()
+                    .is_some_and(|recording| !valid_mbid(&recording.id))
+            {
+                return Err(Error::Invalid("track identity/position/text".into()));
+            }
+            let artist = credit(
+                t.artist_credit
+                    .as_deref()
+                    .filter(|credits| !credits.is_empty())
+                    .or_else(|| {
+                        t.recording
+                            .as_ref()
+                            .and_then(|r| r.artist_credit.as_deref())
+                    }),
+            );
+            if !text(&artist) {
+                return Err(Error::Invalid("track artist text".into()));
+            }
             tracks.push(Track {
                 position: u16::try_from(t.position)
                     .map_err(|_| Error::Invalid("track position".into()))?,
                 title,
-                artist: credit(t.artist_credit.as_deref().or_else(|| {
-                    t.recording
-                        .as_ref()
-                        .and_then(|r| r.artist_credit.as_deref())
-                })),
+                artist,
                 recording_id: t.recording.as_ref().map(|r| r.id.clone()),
                 duration_ms: t
                     .length
@@ -189,7 +214,6 @@ fn convert(r: MbRelease) -> Result<Release> {
 #[derive(Deserialize)]
 struct AcoustId {
     status: String,
-    #[serde(default)]
     results: Vec<AcoustResult>,
 }
 #[derive(Deserialize)]
@@ -276,11 +300,26 @@ mod tests {
     }
     #[test]
     fn full_release_keeps_recording_artist_fallback_disc_identity_and_lengths() {
-        let page = parse_releases(br#"{"id":"00000000-0000-4000-8000-000000000001","title":"A & B","artist-credit":[{"name":"Album artist","artist":{"id":"00000000-0000-4000-8000-000000000002","name":"Album artist"}}],"media":[{"id":"00000000-0000-4000-8000-000000000006","position":1,"track-count":1,"discs":[{"id":"disc","offset-count":1,"offsets":[150],"sectors":1050}],"tracks":[{"id":"00000000-0000-4000-8000-000000000003","position":1,"number":"1","title":"Track","recording":{"id":"00000000-0000-4000-8000-000000000004","title":"Track","length":12000,"artist-credit":[{"name":"Track artist","artist":{"id":"00000000-0000-4000-8000-000000000005","name":"Track artist"}}]}}]}]}"#, true).unwrap();
+        let page = parse_releases(br#"{"id":"00000000-0000-4000-8000-000000000001","title":"A & B","artist-credit":[{"name":"Album artist","artist":{"id":"00000000-0000-4000-8000-000000000002","name":"Album artist"}}],"media":[{"id":"00000000-0000-4000-8000-000000000006","position":1,"track-count":1,"discs":[{"id":"disc","offset-count":1,"offsets":[150],"sectors":1050}],"tracks":[{"id":"00000000-0000-4000-8000-000000000003","position":1,"number":"1","title":"Track","artist-credit":[],"recording":{"id":"00000000-0000-4000-8000-000000000004","title":"Track","length":12000,"artist-credit":[{"name":"Track artist","artist":{"id":"00000000-0000-4000-8000-000000000005","name":"Track artist"}}]}}]}]}"#, true).unwrap();
         let medium = &page.releases[0].media[0];
         assert_eq!(medium.disc_ids, ["disc"]);
         assert_eq!(medium.tracks[0].artist, "Track artist");
         assert_eq!(medium.tracks[0].duration_ms, Some(12000));
+    }
+    #[test]
+    fn malformed_success_and_track_entities_fail_closed() {
+        assert!(parse_acoustid(br#"{"status":"ok"}"#).is_err());
+        let base = serde_json::json!({"id":"00000000-0000-4000-8000-000000000001","title":"Album","media":[{"id":"00000000-0000-4000-8000-000000000002","position":1,"track-count":1,"tracks":[{"id":"00000000-0000-4000-8000-000000000003","number":"1","position":1,"title":"Track","recording":{"id":"bad","title":"Track"}}]}]});
+        assert!(parse_releases(&serde_json::to_vec(&base).unwrap(), true).is_err());
+        let mut value = base.clone();
+        value["media"][0]["tracks"][0]["recording"]["id"] =
+            serde_json::json!("00000000-0000-4000-8000-000000000004");
+        value["media"][0]["tracks"][0]["title"] = serde_json::json!("x".repeat(4097));
+        assert!(parse_releases(&serde_json::to_vec(&value).unwrap(), true).is_err());
+        value["media"][0]["tracks"][0]["title"] = serde_json::json!("Track");
+        let duplicate = value["media"][0].clone();
+        value["media"].as_array_mut().unwrap().push(duplicate);
+        assert!(parse_releases(&serde_json::to_vec(&value).unwrap(), true).is_err());
     }
     #[test]
     fn unknown_envelope_fields_survive_entity_parsing() {

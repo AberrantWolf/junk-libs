@@ -20,7 +20,9 @@ pub struct AudioFingerprint {
 impl AudioFingerprint {
     /// Short tracks can have valid computed coordinates but no searchable fingerprint.
     pub fn usable(&self) -> bool {
-        chromaprint::decode_fingerprint(&self.fingerprint).is_ok_and(|(raw, _)| !raw.is_empty())
+        self.validate().is_ok()
+            && chromaprint::decode_fingerprint(&self.fingerprint)
+                .is_ok_and(|(raw, _)| !raw.is_empty())
     }
 
     pub fn validate(&self) -> Result<()> {
