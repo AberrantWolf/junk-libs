@@ -90,6 +90,9 @@ pub fn compare(
         complete &= m.position.is_some() && m.track_count as usize == m.tracks.len();
         let mut track_positions = BTreeSet::new();
         for t in &m.tracks {
+            let medium_position = m
+                .position
+                .ok_or_else(|| Error::Invalid("tracks lack a medium position".into()))?;
             track_positions.insert(t.position);
             if slots.len() >= MAX_TRACKS
                 || t.position == 0
@@ -100,7 +103,7 @@ pub fn compare(
             {
                 return Err(Error::Invalid("release track envelope".into()));
             }
-            slots.push((m.position.unwrap_or(0), t));
+            slots.push((medium_position, t));
         }
         complete &= track_positions
             .iter()
@@ -451,6 +454,12 @@ mod tests {
                 .unwrap()
                 .complete_tracklist
         );
+    }
+    #[test]
+    fn unpositioned_tracks_cannot_produce_invented_disc_zero_mappings() {
+        let mut r = release();
+        r.media[0].position = None;
+        assert!(compare(&[local("a", &[1])], &r, &mut || Ok(())).is_err());
     }
     #[test]
     fn duplicate_or_zero_medium_positions_fail_even_without_duplicate_track_slots() {

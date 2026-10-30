@@ -35,7 +35,8 @@ truncation and inconsistent lengths. Provider and assignment tests are offline.
 ## Review follow-up — 2026-10-30
 
 Completeness requires contiguous medium/track positions, and duplicate or zero
-medium positions fail closed. Provider decoding rejects malformed track identities,
+medium positions fail closed. Tracks without a medium position cannot produce
+invented disc-zero mappings. Provider decoding rejects malformed track identities,
 positions and text, and successful AcoustID envelopes must include a results array.
 An explicitly empty track credit falls back to the recording credit. Searchability
 also requires a valid fingerprint envelope. Exhaustive independent enumeration of
