@@ -11,7 +11,7 @@ pub struct Mapping {
     pub score: f64,
     pub duration_delta_ms: Option<u64>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct AlbumMatch {
     pub release: Release,
     pub mappings: Vec<Mapping>,
@@ -22,6 +22,55 @@ pub struct AlbumMatch {
     pub duration_conflicts: usize,
     pub unmatched: Vec<String>,
 }
+// Revalidate derived completeness when reading persisted reviews. Keep historical
+// evidence readable, but never upgrade an incomplete observation or trust a stale flag.
+#[derive(Deserialize)]
+#[serde(remote = "AlbumMatch")]
+struct AlbumMatchWire {
+    pub release: Release,
+    pub mappings: Vec<Mapping>,
+    pub local_tracks: usize,
+    pub release_tracks: usize,
+    pub complete_tracklist: bool,
+    pub ambiguous_mapping: bool,
+    pub duration_conflicts: usize,
+    pub unmatched: Vec<String>,
+}
+impl<'de> Deserialize<'de> for AlbumMatch {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let mut value = AlbumMatchWire::deserialize(deserializer)?;
+        value.complete_tracklist &= complete_layout(&value.release);
+        Ok(value)
+    }
+}
+fn complete_layout(release: &Release) -> bool {
+    if release.media.is_empty() || release.media.len() > 99 {
+        return false;
+    }
+    let media_positions: BTreeSet<_> = release
+        .media
+        .iter()
+        .filter_map(|medium| medium.position)
+        .collect();
+    media_positions
+        .iter()
+        .copied()
+        .eq(1..=release.media.len() as u16)
+        && release.media.iter().all(|medium| {
+            medium.tracks.len() == medium.track_count as usize
+                && medium
+                    .tracks
+                    .iter()
+                    .map(|track| u32::from(track.position))
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .eq(1..=medium.track_count)
+        })
+        && release.media.iter().any(|medium| !medium.tracks.is_empty())
+}
+
 fn augment(
     local: usize,
     edges: &[Vec<usize>],
@@ -74,7 +123,6 @@ pub fn compare(
     }
     let mut slots = Vec::new();
     let mut positions = BTreeSet::new();
-    let mut complete = true;
     let mut declared = 0usize;
     let mut media_positions = BTreeSet::new();
     for m in &release.media {
@@ -87,13 +135,10 @@ pub fn compare(
         declared = declared
             .checked_add(m.track_count as usize)
             .ok_or_else(|| Error::Invalid("track count".into()))?;
-        complete &= m.position.is_some() && m.track_count as usize == m.tracks.len();
-        let mut track_positions = BTreeSet::new();
         for t in &m.tracks {
             let medium_position = m
                 .position
                 .ok_or_else(|| Error::Invalid("tracks lack a medium position".into()))?;
-            track_positions.insert(t.position);
             if slots.len() >= MAX_TRACKS
                 || t.position == 0
                 || !positions.insert((m.position, t.position))
@@ -105,15 +150,7 @@ pub fn compare(
             }
             slots.push((medium_position, t));
         }
-        complete &= track_positions
-            .iter()
-            .map(|position| u32::from(*position))
-            .eq(1..=m.track_count);
     }
-    complete &= media_positions
-        .iter()
-        .copied()
-        .eq(1..=release.media.len() as u16);
     let mut edges = Vec::new();
     for t in local {
         checkpoint()?;
@@ -241,7 +278,7 @@ pub fn compare(
         mappings,
         local_tracks: local.len(),
         release_tracks: declared,
-        complete_tracklist: complete && !slots.is_empty(),
+        complete_tracklist: complete_layout(release),
         ambiguous_mapping: ambiguous,
         duration_conflicts: conflicts,
         unmatched: local
@@ -437,6 +474,34 @@ mod tests {
         let m = compare(&[local("a", &[1])], &r, &mut || Ok(())).unwrap();
         assert!(!m.complete_tracklist);
         assert_eq!(m.release_tracks, 3);
+    }
+    #[test]
+    fn persisted_completeness_is_downgraded_without_hiding_or_upgrading_evidence() {
+        let matched = compare(
+            &[local("a", &[1]), local("b", &[2])],
+            &release(),
+            &mut || Ok(()),
+        )
+        .unwrap();
+        let valid = serde_json::to_value(&matched).unwrap();
+        assert!(
+            serde_json::from_value::<AlbumMatch>(valid.clone())
+                .unwrap()
+                .complete_tracklist
+        );
+        let mut historical = valid.clone();
+        historical["release"]["media"][0]["tracks"][1]["position"] = serde_json::json!(3);
+        let loaded: AlbumMatch = serde_json::from_value(historical).unwrap();
+        assert!(!loaded.complete_tracklist);
+        assert_eq!(loaded.mappings, matched.mappings);
+        assert_eq!(loaded.release.media[0].tracks[1].position, 3);
+        let mut incomplete = valid;
+        incomplete["complete_tracklist"] = serde_json::json!(false);
+        assert!(
+            !serde_json::from_value::<AlbumMatch>(incomplete)
+                .unwrap()
+                .complete_tracklist
+        );
     }
     #[test]
     fn gaps_in_track_or_medium_positions_are_not_complete() {

@@ -41,3 +41,8 @@ positions and text, and successful AcoustID envelopes must include a results arr
 An explicitly empty track credit falls back to the recording credit. Searchability
 also requires a valid fingerprint envelope. Exhaustive independent enumeration of
 all 512 three-by-three recording graphs checks cardinality and ambiguity.
+
+Persisted review completeness is revalidated on deserialization. Historical
+responses remain readable with their track data intact; stale completeness flags
+are downgraded, and originally incomplete evidence is never upgraded. Existing
+accepted metadata is not rewritten.
