@@ -83,7 +83,7 @@ pub fn inspect_file_audio(
     checkpoint: &mut dyn FnMut() -> Result<(), AudioDecodeError>,
 ) -> Result<FileAudioInfo, AudioDecodeError> {
     checkpoint()?;
-    validate_structure(source.reader_mut(), checkpoint)?;
+    let mut suffix = validate_structure(source.reader_mut(), checkpoint)?;
     #[cfg(feature = "decode-compressed")]
     let footer = read_id3_footer(source.reader_mut())?;
     let mut decoder = AudioDecoder::open(source)?;
@@ -116,7 +116,13 @@ pub fn inspect_file_audio(
     }
     #[cfg(feature = "decode-compressed")]
     for (key, values) in footer.tags {
+        suffix.tags.entry(key).or_insert(values);
+    }
+    for (key, values) in suffix.tags {
         decoder.inspection.tags.entry(key).or_insert(values);
+    }
+    if decoder.inspection.pictures.is_empty() {
+        decoder.inspection.pictures = suffix.pictures;
     }
     decoder.inspection.decoded_frames = Some(frames);
     Ok(decoder.inspection)
@@ -128,9 +134,10 @@ pub fn inspect_file_audio(
 fn validate_structure(
     reader: &mut dyn crate::AudioReadSeek,
     checkpoint: &mut dyn FnMut() -> Result<(), AudioDecodeError>,
-) -> Result<(), AudioDecodeError> {
+) -> Result<FileAudioInfo, AudioDecodeError> {
     use std::io::SeekFrom;
     let invalid = || AudioDecodeError::Decoder("malformed or truncated audio structure".into());
+    let mut suffix = FileAudioInfo::default();
     let end = reader
         .seek(SeekFrom::End(0))
         .map_err(|e| AudioDecodeError::Decoder(e.to_string()))?;
@@ -170,6 +177,19 @@ fn validate_structure(
             }
         }
     } else {
+        let mut audio_end = end;
+        if end >= 128 {
+            reader
+                .seek(SeekFrom::Start(end - 128))
+                .map_err(|_| invalid())?;
+            let mut tag = [0; 3];
+            reader.read_exact(&mut tag).map_err(|_| invalid())?;
+            if &tag == b"TAG" {
+                audio_end -= 128;
+            }
+        }
+        let (end, parsed) = crate::ape::suffix(reader, audio_end, checkpoint)?;
+        suffix = parsed;
         let mut position = 0u64;
         if &signature[..3] == b"ID3" {
             if !matches!(signature[3], 2..=4) || signature[6..10].iter().any(|b| b & 0x80 != 0) {
@@ -251,7 +271,7 @@ fn validate_structure(
         }
     }
     reader.seek(SeekFrom::Start(0)).map_err(|_| invalid())?;
-    Ok(())
+    Ok(suffix)
 }
 
 #[cfg(feature = "decode-compressed")]

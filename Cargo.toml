@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+exclude = ["vendor/symphonia-bundle-mp3"]
 members = [
     "junk-libs-core",
     "junk-libs-music",

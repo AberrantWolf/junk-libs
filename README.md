@@ -72,3 +72,16 @@ Add overrides for other crates you edit. Active path overrides require that chec
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+### MP3 compatibility — 2026-11-01
+
+File inspection accepts checked APEv2 suffixes (optionally followed by ID3v1),
+including text tags and JPEG/PNG front covers. Tag sizes, counts, item boundaries,
+header/footer agreement and cancellation are checked before allocation or reads.
+Original encoded bytes are never rewritten. ID3 metadata keeps priority over APE
+text, and APE takes priority over the fallback ID3v1 footer.
+
+MP3 decoding uses the narrow [Symphonia 0.5.5 backport](vendor/symphonia-bundle-mp3/BACKPORT.md)
+of upstream PR #528. Empty channels at the bit-reservoir boundary decode normally;
+missing nonempty data still fails. This avoids silently skipping frames or treating
+decode errors as successful inspection. Other Symphonia APIs/codecs are unchanged.

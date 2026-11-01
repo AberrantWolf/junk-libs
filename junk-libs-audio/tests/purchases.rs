@@ -257,3 +257,110 @@ fn compressed_id3_frames_are_explicitly_unsupported_and_v24_frame_unsync_decodes
         Some("ÿà")
     );
 }
+
+fn ape_tag(items: &[(&str, u32, &[u8])], header: bool) -> Vec<u8> {
+    let mut body = Vec::new();
+    for (key, flags, value) in items {
+        body.extend((value.len() as u32).to_le_bytes());
+        body.extend(flags.to_le_bytes());
+        body.extend(key.as_bytes());
+        body.push(0);
+        body.extend(*value);
+    }
+    let mut footer = b"APETAGEX".to_vec();
+    footer.extend(2000u32.to_le_bytes());
+    footer.extend((body.len() as u32 + 32).to_le_bytes());
+    footer.extend((items.len() as u32).to_le_bytes());
+    footer.extend((if header { 0x80000000u32 } else { 0 }).to_le_bytes());
+    footer.extend([0; 8]);
+    if header {
+        let mut h = footer.clone();
+        h[20..24].copy_from_slice(&0xa0000000u32.to_le_bytes());
+        body.splice(0..0, h);
+    }
+    body.extend(footer);
+    body
+}
+#[test]
+fn apev2_suffix_preserves_audio_timing_and_exposes_tags_and_cover() {
+    let original = fixture("mp3-44100-cbr.mp3");
+    let before = inspect_file_audio(source(original.clone(), "mp3"), &mut || Ok(())).unwrap();
+    for header in [false, true] {
+        // Remove the existing ID3v1 footer while appending APE, then restore it.
+        let end = if &original[original.len() - 128..original.len() - 125] == b"TAG" {
+            original.len() - 128
+        } else {
+            original.len()
+        };
+        let mut bytes = original[..end].to_vec();
+        let tag = ape_tag(
+            &[
+                ("Album Artist", 0, b"APE artist"),
+                (
+                    "Cover Art (Front)",
+                    2,
+                    b"cover.png\0\x89PNG\r\n\x1a\nfixture",
+                ),
+            ],
+            header,
+        );
+        bytes.extend(tag);
+        bytes.extend(&original[end..]);
+        let info = inspect_file_audio(source(bytes, "mp3"), &mut || Ok(())).unwrap();
+        assert_eq!(info.decoded_frames, before.decoded_frames);
+        assert_eq!(info.tag("album_artist"), Some("APE artist"));
+        assert_eq!(info.pictures[0].0, "image/png");
+    }
+}
+#[test]
+fn malformed_ape_lengths_headers_items_and_cancelled_reads_fail() {
+    let original = fixture("mp3-44100-no-xing.mp3");
+    let end = if &original[original.len() - 128..original.len() - 125] == b"TAG" {
+        original.len() - 128
+    } else {
+        original.len()
+    };
+    let tag = ape_tag(&[("Album Artist", 0, b"artist")], true);
+    for offset in [
+        0,
+        8,
+        12,
+        16,
+        20,
+        24,
+        32,
+        36,
+        40,
+        tag.len() - 24,
+        tag.len() - 20,
+        tag.len() - 16,
+        tag.len() - 12,
+        tag.len() - 8,
+    ] {
+        let mut bad = tag.clone();
+        bad[offset] ^= 0xff;
+        let mut bytes = original[..end].to_vec();
+        bytes.extend(bad);
+        bytes.extend(&original[end..]);
+        assert!(
+            inspect_file_audio(source(bytes, "mp3"), &mut || Ok(())).is_err(),
+            "offset {offset}"
+        );
+    }
+    let mut bytes = original[..end].to_vec();
+    bytes.extend(&tag[..tag.len() - 1]);
+    assert!(inspect_file_audio(source(bytes, "mp3"), &mut || Ok(())).is_err());
+    let large = ape_tag(&[("Cover Art (Front)", 2, &vec![1; 200_000])], false);
+    let mut bytes = original[..end].to_vec();
+    bytes.extend(large);
+    let mut checkpoints = 0;
+    let result = inspect_file_audio(source(bytes, "mp3"), &mut || {
+        checkpoints += 1;
+        if checkpoints == 5 {
+            Err(AudioDecodeError::Cancelled)
+        } else {
+            Ok(())
+        }
+    });
+    assert!(matches!(result, Err(AudioDecodeError::Cancelled)));
+}

@@ -8,7 +8,7 @@ license.workspace = true
 default = []
 derivative-validation = ["dep:claxon", "dep:junk-libs-disc"]
 decode-wav = ["dep:symphonia"]
-decode-compressed = ["dep:symphonia", "symphonia/all", "dep:symphonia-metadata"]
+decode-compressed = ["dep:symphonia", "symphonia/all", "dep:symphonia-metadata", "dep:symphonia-bundle-mp3"]
 disc-readers = ["dep:junk-libs-disc"]
 resample = ["dep:rubato"]
 
@@ -20,6 +20,10 @@ serde.workspace = true
 symphonia = { version = "0.5.5", default-features = false, features = ["pcm", "wav"], optional = true }
 symphonia-metadata = { version = "0.5.5", optional = true }
 rubato = { version = "0.16.2", optional = true }
+
+
+# Symphonia PR #528 backport; see vendor provenance.
+symphonia-bundle-mp3 = { path = "../vendor/symphonia-bundle-mp3", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

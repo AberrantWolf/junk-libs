@@ -118,6 +118,22 @@ impl AudioDecoder {
                 "declared audio packet exceeds decoder bounds".into(),
             ));
         }
+        #[cfg(feature = "decode-compressed")]
+        let decoder: Box<dyn Decoder> =
+            if track.codec_params.codec == symphonia::core::codecs::CODEC_TYPE_MP3 {
+                Box::new(
+                    symphonia_bundle_mp3::MpaDecoder::try_new(
+                        &track.codec_params,
+                        &DecoderOptions::default(),
+                    )
+                    .map_err(AudioDecodeError::from)?,
+                )
+            } else {
+                symphonia::default::get_codecs()
+                    .make(&track.codec_params, &DecoderOptions::default())
+                    .map_err(AudioDecodeError::from)?
+            };
+        #[cfg(not(feature = "decode-compressed"))]
         let decoder = symphonia::default::get_codecs()
             .make(&track.codec_params, &DecoderOptions::default())
             .map_err(AudioDecodeError::from)?;
