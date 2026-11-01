@@ -431,14 +431,60 @@ fn suffix_metadata_read_is_bounded_and_cancellable_without_decoding_audio() {
         &[("Cover Art (Front)", 2, &vec![1; 200_000])],
         false,
     ));
-    let mut checkpoints = 0;
-    let result = junk_libs_audio::inspect_file_audio_metadata(source(bytes, "mp3"), &mut || {
-        checkpoints += 1;
-        if checkpoints == 6 {
-            Err(AudioDecodeError::Cancelled)
-        } else {
-            Ok(())
-        }
-    });
+    let read = Arc::new(AtomicUsize::new(0));
+    let len = bytes.len() as u64;
+    let result = junk_libs_audio::inspect_file_audio_metadata(
+        ByteSource::new(
+            Counted {
+                inner: Cursor::new(bytes),
+                read: read.clone(),
+            },
+            MediaHint::new(Some(len), Some("mp3"), None),
+        ),
+        &mut || {
+            if read.load(Ordering::Relaxed) >= 32 * 1024 {
+                Err(AudioDecodeError::Cancelled)
+            } else {
+                Ok(())
+            }
+        },
+    );
+    assert!(
+        read.load(Ordering::Relaxed) < 200_000,
+        "cancellation came after the cover read"
+    );
     assert!(matches!(result, Err(AudioDecodeError::Cancelled)));
+}
+
+#[test]
+fn ape_cover_mpeg_bytes_never_become_audio_or_distort_exact_seeks() {
+    let original = fixture("mp3-44100-no-xing.mp3");
+    let expected = inspect_file_audio(source(original.clone(), "mp3"), &mut || Ok(())).unwrap();
+    let end = if &original[original.len() - 128..original.len() - 125] == b"TAG" {
+        original.len() - 128
+    } else {
+        original.len()
+    };
+    let mut cover = b"front.png\0\x89PNG\r\n\x1a\n".to_vec();
+    cover.extend(vec![0; 1000]);
+    // These real MPEG frames live inside an opaque binary tag, outside the
+    // validated audio range. No Xing duration is available to hide over-decoding.
+    for _ in 0..3 {
+        cover.extend(&original);
+    }
+    for header in [false, true] {
+        let mut bytes = original[..end].to_vec();
+        bytes.extend(ape_tag(&[("Cover Art (Front)", 2, &cover)], header));
+        bytes.extend(&original[end..]);
+        let actual = inspect_file_audio(source(bytes.clone(), "mp3"), &mut || Ok(())).unwrap();
+        assert_eq!(actual.decoded_frames, expected.decoded_frames);
+        let mut plain = AudioDecoder::open(source(original.clone(), "mp3")).unwrap();
+        let mut tagged = AudioDecoder::open(source(bytes, "mp3")).unwrap();
+        plain.seek_exact(FramePosition(9000)).unwrap();
+        tagged.seek_exact(FramePosition(9000)).unwrap();
+        assert_eq!(
+            plain.read_frames(17).unwrap(),
+            tagged.read_frames(17).unwrap()
+        );
+    }
 }

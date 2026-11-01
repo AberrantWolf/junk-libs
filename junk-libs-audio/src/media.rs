@@ -34,12 +34,25 @@ pub struct AudioDecoder {
 }
 
 impl AudioDecoder {
-    pub fn open(mut source: ByteSource) -> Result<Self, AudioDecodeError> {
+    pub fn open(source: ByteSource) -> Result<Self, AudioDecodeError> {
+        Self::open_checked(source, &mut || Ok(()))
+    }
+
+    pub(crate) fn open_checked(
+        mut source: ByteSource,
+        checkpoint: &mut dyn FnMut() -> Result<(), AudioDecodeError>,
+    ) -> Result<Self, AudioDecodeError> {
+        checkpoint()?;
         let legacy_pictures = crate::file_audio::validate_metadata_prefix(source.reader_mut())?;
+        let (payload_end, suffix) = crate::file_audio::decoder_suffix(&mut source, checkpoint)?;
         let (reader, media_hint) = source.into_parts();
 
         let stream = MediaSourceStream::new(
-            Box::new(LockedSource::new(reader, media_hint.length_bytes)),
+            Box::new(LockedSource::new(
+                reader,
+                media_hint.length_bytes,
+                payload_end,
+            )),
             Default::default(),
         );
         let mut hint = Hint::new();
@@ -101,6 +114,14 @@ impl AudioDecoder {
             _ => "other",
         }
         .into();
+        if inspection.codec == "mp3" {
+            for (key, values) in suffix.tags {
+                inspection.tags.entry(key).or_insert(values);
+            }
+            if inspection.pictures.is_empty() {
+                inspection.pictures = suffix.pictures;
+            }
+        }
         inspection.sample_rate = sample_rate;
         inspection.channels = channels;
         inspection.bits_per_sample = track.codec_params.bits_per_sample;
@@ -310,13 +331,21 @@ impl AudioDecoder {
 struct LockedSource {
     reader: Mutex<Box<dyn AudioReadSeek>>,
     length_bytes: Option<u64>,
+    payload_end: Option<u64>,
+    position: u64,
 }
 
 impl LockedSource {
-    fn new(reader: Box<dyn AudioReadSeek>, length_bytes: Option<u64>) -> Self {
+    fn new(
+        reader: Box<dyn AudioReadSeek>,
+        length_bytes: Option<u64>,
+        payload_end: Option<u64>,
+    ) -> Self {
         Self {
             reader: Mutex::new(reader),
-            length_bytes,
+            length_bytes: payload_end.or(length_bytes),
+            payload_end,
+            position: 0,
         }
     }
 
@@ -329,13 +358,60 @@ impl LockedSource {
 
 impl Read for LockedSource {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.reader_mut()?.read(buffer)
+        let allowed = match self.payload_end {
+            Some(end) => usize::try_from(
+                end.checked_sub(self.position)
+                    .ok_or_else(|| io::Error::other("audio cursor exceeds payload"))?
+                    .min(buffer.len() as u64),
+            )
+            .unwrap(),
+            None => buffer.len(),
+        };
+        let count = self.reader_mut()?.read(&mut buffer[..allowed])?;
+        if count > allowed {
+            return Err(io::Error::other("audio reader exceeded request"));
+        }
+        self.position = self
+            .position
+            .checked_add(count as u64)
+            .ok_or_else(|| io::Error::other("audio cursor overflow"))?;
+        Ok(count)
     }
 }
 
 impl Seek for LockedSource {
     fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
-        self.reader_mut()?.seek(position)
+        let target = if let Some(end) = self.payload_end {
+            let offset = match position {
+                SeekFrom::Start(n) => i128::from(n),
+                SeekFrom::Current(n) => i128::from(self.position) + i128::from(n),
+                SeekFrom::End(n) => i128::from(end) + i128::from(n),
+            };
+            if offset < 0 || offset > i128::from(end) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "seek exceeds audio payload",
+                ));
+            }
+            SeekFrom::Start(offset as u64)
+        } else {
+            position
+        };
+        let actual = self.reader_mut()?.seek(target)?;
+        if let Some(end) = self.payload_end {
+            if actual > end {
+                return Err(io::Error::other("audio seek exceeds payload"));
+            }
+            if let SeekFrom::Start(expected) = target
+                && actual != expected
+            {
+                return Err(io::Error::other(
+                    "audio seek did not reach requested position",
+                ));
+            }
+        }
+        self.position = actual;
+        Ok(actual)
     }
 }
 

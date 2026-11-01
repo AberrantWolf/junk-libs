@@ -79,38 +79,44 @@ impl FileAudioInfo {
 /// Read bounded descriptive metadata without traversing/decoding the audio payload.
 /// This does not assert structural validity; use `inspect_file_audio` for analysis.
 pub fn inspect_file_audio_metadata(
-    mut source: ByteSource,
+    source: ByteSource,
     checkpoint: &mut dyn FnMut() -> Result<(), AudioDecodeError>,
 ) -> Result<FileAudioInfo, AudioDecodeError> {
-    use std::io::SeekFrom;
     checkpoint()?;
+    let info = AudioDecoder::open_checked(source, checkpoint)?.inspection;
+    if !matches!(info.codec.as_str(), "flac" | "mp3") {
+        return Err(AudioDecodeError::UnsupportedSource(info.codec));
+    }
+    checkpoint()?;
+    Ok(info)
+}
+
+/// Keep recognized suffix bytes outside the MPEG decoder's readable/seekable
+/// extent. Otherwise a cover can supply false MPEG frames or distort CBR seeks.
+pub(crate) fn decoder_suffix(
+    source: &mut ByteSource,
+    checkpoint: &mut dyn FnMut() -> Result<(), AudioDecodeError>,
+) -> Result<(Option<u64>, FileAudioInfo), AudioDecodeError> {
+    use std::io::SeekFrom;
     let reader = source.reader_mut();
     let error = |e: std::io::Error| AudioDecodeError::Decoder(e.to_string());
+    checkpoint()?;
     let end = reader.seek(SeekFrom::End(0)).map_err(error)?;
     reader.seek(SeekFrom::Start(0)).map_err(error)?;
     let mut signature = [0; 4];
     reader.read_exact(&mut signature).map_err(error)?;
-    let suffix = if &signature == b"fLaC" {
-        FileAudioInfo::default()
+    let result = if &signature[..3] == b"ID3" || signature[0] == 0xff && signature[1] & 0xe0 == 0xe0
+    {
+        let (audio_end, suffix) = read_mp3_suffix(reader, end, checkpoint)?;
+        #[cfg(feature = "decode-compressed")]
+        let suffix = with_id3_footer(suffix, reader)?;
+        (Some(audio_end), suffix)
     } else {
-        read_mp3_suffix(reader, end, checkpoint)?.1
+        (None, FileAudioInfo::default())
     };
-    #[cfg(feature = "decode-compressed")]
-    let suffix = with_id3_footer(suffix, reader)?;
     reader.seek(SeekFrom::Start(0)).map_err(error)?;
     checkpoint()?;
-    let mut info = AudioDecoder::open(source)?.inspection;
-    if !matches!(info.codec.as_str(), "flac" | "mp3") {
-        return Err(AudioDecodeError::UnsupportedSource(info.codec));
-    }
-    for (key, values) in suffix.tags {
-        info.tags.entry(key).or_insert(values);
-    }
-    if info.pictures.is_empty() {
-        info.pictures = suffix.pictures;
-    }
-    checkpoint()?;
-    Ok(info)
+    Ok(result)
 }
 
 fn read_mp3_suffix(
@@ -143,7 +149,7 @@ pub fn inspect_file_audio(
     let suffix = validate_structure(source.reader_mut(), checkpoint)?;
     #[cfg(feature = "decode-compressed")]
     let suffix = with_id3_footer(suffix, source.reader_mut())?;
-    let mut decoder = AudioDecoder::open(source)?;
+    let mut decoder = AudioDecoder::open_checked(source, checkpoint)?;
     if !matches!(decoder.inspection.codec.as_str(), "flac" | "mp3") {
         return Err(AudioDecodeError::UnsupportedSource(
             decoder.inspection.codec,

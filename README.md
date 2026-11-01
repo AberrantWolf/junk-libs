@@ -90,3 +90,8 @@ decode errors as successful inspection. Other Symphonia APIs/codecs are unchange
 front cover without decoding/traversing the payload. It makes no structural
 validity claim and honors cancellation during metadata reads. Full analysis
 continues to use `inspect_file_audio`.
+
+MPEG decoders expose only the validated audio extent to demuxing and seeking;
+APEv2/ID3v1 suffix bytes cannot supply extra frames or inflate CBR byte estimates.
+Regression coverage includes a no-Xing source whose binary cover contains real
+MPEG frames, with and without an APE header, plus late exact seek/sample equality.
