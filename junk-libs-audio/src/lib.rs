@@ -253,7 +253,7 @@ pub use sequence::{SequenceSource, decode_sequence};
 #[cfg(any(feature = "decode-wav", feature = "decode-compressed"))]
 mod file_audio;
 #[cfg(any(feature = "decode-wav", feature = "decode-compressed"))]
-pub use file_audio::{FileAudioInfo, inspect_file_audio};
+pub use file_audio::{FileAudioInfo, inspect_file_audio, inspect_file_audio_metadata};
 
-#[cfg(feature = "decode-compressed")]
+#[cfg(any(feature = "decode-wav", feature = "decode-compressed"))]
 mod ape;

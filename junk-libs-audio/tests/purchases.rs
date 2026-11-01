@@ -306,6 +306,14 @@ fn apev2_suffix_preserves_audio_timing_and_exposes_tags_and_cover() {
         );
         bytes.extend(tag);
         bytes.extend(&original[end..]);
+        let metadata =
+            junk_libs_audio::inspect_file_audio_metadata(source(bytes.clone(), "mp3"), &mut || {
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(metadata.tag("album_artist"), Some("APE artist"));
+        assert_eq!(metadata.pictures[0].0, "image/png");
+        assert_eq!(metadata.decoded_frames, None);
         let info = inspect_file_audio(source(bytes, "mp3"), &mut || Ok(())).unwrap();
         assert_eq!(info.decoded_frames, before.decoded_frames);
         assert_eq!(info.tag("album_artist"), Some("APE artist"));
@@ -357,6 +365,76 @@ fn malformed_ape_lengths_headers_items_and_cancelled_reads_fail() {
     let result = inspect_file_audio(source(bytes, "mp3"), &mut || {
         checkpoints += 1;
         if checkpoints == 5 {
+            Err(AudioDecodeError::Cancelled)
+        } else {
+            Ok(())
+        }
+    });
+    assert!(matches!(result, Err(AudioDecodeError::Cancelled)));
+}
+
+#[test]
+fn suffix_metadata_read_is_bounded_and_cancellable_without_decoding_audio() {
+    use std::{
+        io::{Read, Seek, SeekFrom},
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
+    struct Counted {
+        inner: Cursor<Vec<u8>>,
+        read: Arc<AtomicUsize>,
+    }
+    impl Read for Counted {
+        fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(b)?;
+            self.read.fetch_add(n, Ordering::Relaxed);
+            Ok(n)
+        }
+    }
+    impl Seek for Counted {
+        fn seek(&mut self, p: SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(p)
+        }
+    }
+    let mut bytes = fixture("mp3-44100-cbr.mp3");
+    // The later payload is intentionally invalid: metadata probing must not scan
+    // or decode it, and must not claim that the audio passed structural analysis.
+    bytes.extend(vec![0; 4 * 1024 * 1024]);
+    bytes.extend(ape_tag(
+        &[
+            ("Album Artist", 0, b"Bounded artist"),
+            ("Cover Art (Front)", 2, b"front.png\0\x89PNG\r\n\x1a\nimage"),
+        ],
+        true,
+    ));
+    let len = bytes.len() as u64;
+    let read = Arc::new(AtomicUsize::new(0));
+    let info = junk_libs_audio::inspect_file_audio_metadata(
+        ByteSource::new(
+            Counted {
+                inner: Cursor::new(bytes),
+                read: read.clone(),
+            },
+            MediaHint::new(Some(len), Some("mp3"), None),
+        ),
+        &mut || Ok(()),
+    )
+    .unwrap();
+    assert_eq!(info.tag("album_artist"), Some("Bounded artist"));
+    assert_eq!(info.pictures[0].0, "image/png");
+    assert_eq!(info.decoded_frames, None);
+    assert!(read.load(Ordering::Relaxed) < 256 * 1024);
+    let mut bytes = fixture("mp3-44100-cbr.mp3");
+    bytes.extend(ape_tag(
+        &[("Cover Art (Front)", 2, &vec![1; 200_000])],
+        false,
+    ));
+    let mut checkpoints = 0;
+    let result = junk_libs_audio::inspect_file_audio_metadata(source(bytes, "mp3"), &mut || {
+        checkpoints += 1;
+        if checkpoints == 6 {
             Err(AudioDecodeError::Cancelled)
         } else {
             Ok(())

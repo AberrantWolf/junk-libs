@@ -85,3 +85,8 @@ MP3 decoding uses the narrow [Symphonia 0.5.5 backport](vendor/symphonia-bundle-
 of upstream PR #528. Empty channels at the bit-reservoir boundary decode normally;
 missing nonempty data still fails. This avoids silently skipping frames or treating
 decode errors as successful inspection. Other Symphonia APIs/codecs are unchanged.
+
+`inspect_file_audio_metadata` supplies the same bounded prefix/suffix tags and
+front cover without decoding/traversing the payload. It makes no structural
+validity claim and honors cancellation during metadata reads. Full analysis
+continues to use `inspect_file_audio`.

@@ -76,6 +76,63 @@ impl FileAudioInfo {
             .filter(|value| !value.is_empty())
     }
 }
+/// Read bounded descriptive metadata without traversing/decoding the audio payload.
+/// This does not assert structural validity; use `inspect_file_audio` for analysis.
+pub fn inspect_file_audio_metadata(
+    mut source: ByteSource,
+    checkpoint: &mut dyn FnMut() -> Result<(), AudioDecodeError>,
+) -> Result<FileAudioInfo, AudioDecodeError> {
+    use std::io::SeekFrom;
+    checkpoint()?;
+    let reader = source.reader_mut();
+    let error = |e: std::io::Error| AudioDecodeError::Decoder(e.to_string());
+    let end = reader.seek(SeekFrom::End(0)).map_err(error)?;
+    reader.seek(SeekFrom::Start(0)).map_err(error)?;
+    let mut signature = [0; 4];
+    reader.read_exact(&mut signature).map_err(error)?;
+    let suffix = if &signature == b"fLaC" {
+        FileAudioInfo::default()
+    } else {
+        read_mp3_suffix(reader, end, checkpoint)?.1
+    };
+    #[cfg(feature = "decode-compressed")]
+    let suffix = with_id3_footer(suffix, reader)?;
+    reader.seek(SeekFrom::Start(0)).map_err(error)?;
+    checkpoint()?;
+    let mut info = AudioDecoder::open(source)?.inspection;
+    if !matches!(info.codec.as_str(), "flac" | "mp3") {
+        return Err(AudioDecodeError::UnsupportedSource(info.codec));
+    }
+    for (key, values) in suffix.tags {
+        info.tags.entry(key).or_insert(values);
+    }
+    if info.pictures.is_empty() {
+        info.pictures = suffix.pictures;
+    }
+    checkpoint()?;
+    Ok(info)
+}
+
+fn read_mp3_suffix(
+    reader: &mut dyn crate::AudioReadSeek,
+    end: u64,
+    checkpoint: &mut dyn FnMut() -> Result<(), AudioDecodeError>,
+) -> Result<(u64, FileAudioInfo), AudioDecodeError> {
+    use std::io::SeekFrom;
+    let error = |e: std::io::Error| AudioDecodeError::Decoder(e.to_string());
+    let mut audio_end = end;
+    checkpoint()?;
+    if end >= 128 {
+        reader.seek(SeekFrom::Start(end - 128)).map_err(error)?;
+        let mut tag = [0; 3];
+        reader.read_exact(&mut tag).map_err(error)?;
+        if &tag == b"TAG" {
+            audio_end -= 128;
+        }
+    }
+    crate::ape::suffix(reader, audio_end, checkpoint)
+}
+
 /// Decode every frame with cooperative cancellation. The byte reader must also
 /// bound/cancel I/O during probing and individual decoder reads.
 pub fn inspect_file_audio(
@@ -83,9 +140,9 @@ pub fn inspect_file_audio(
     checkpoint: &mut dyn FnMut() -> Result<(), AudioDecodeError>,
 ) -> Result<FileAudioInfo, AudioDecodeError> {
     checkpoint()?;
-    let mut suffix = validate_structure(source.reader_mut(), checkpoint)?;
+    let suffix = validate_structure(source.reader_mut(), checkpoint)?;
     #[cfg(feature = "decode-compressed")]
-    let footer = read_id3_footer(source.reader_mut())?;
+    let suffix = with_id3_footer(suffix, source.reader_mut())?;
     let mut decoder = AudioDecoder::open(source)?;
     if !matches!(decoder.inspection.codec.as_str(), "flac" | "mp3") {
         return Err(AudioDecodeError::UnsupportedSource(
@@ -113,10 +170,6 @@ pub fn inspect_file_audio(
     checkpoint()?;
     if frames == 0 {
         return Err(AudioDecodeError::Decoder("empty audio stream".into()));
-    }
-    #[cfg(feature = "decode-compressed")]
-    for (key, values) in footer.tags {
-        suffix.tags.entry(key).or_insert(values);
     }
     for (key, values) in suffix.tags {
         decoder.inspection.tags.entry(key).or_insert(values);
@@ -177,18 +230,7 @@ fn validate_structure(
             }
         }
     } else {
-        let mut audio_end = end;
-        if end >= 128 {
-            reader
-                .seek(SeekFrom::Start(end - 128))
-                .map_err(|_| invalid())?;
-            let mut tag = [0; 3];
-            reader.read_exact(&mut tag).map_err(|_| invalid())?;
-            if &tag == b"TAG" {
-                audio_end -= 128;
-            }
-        }
-        let (end, parsed) = crate::ape::suffix(reader, audio_end, checkpoint)?;
+        let (end, parsed) = read_mp3_suffix(reader, end, checkpoint)?;
         suffix = parsed;
         let mut position = 0u64;
         if &signature[..3] == b"ID3" {
@@ -271,6 +313,17 @@ fn validate_structure(
         }
     }
     reader.seek(SeekFrom::Start(0)).map_err(|_| invalid())?;
+    Ok(suffix)
+}
+
+#[cfg(feature = "decode-compressed")]
+fn with_id3_footer(
+    mut suffix: FileAudioInfo,
+    reader: &mut dyn crate::AudioReadSeek,
+) -> Result<FileAudioInfo, AudioDecodeError> {
+    for (key, values) in read_id3_footer(reader)?.tags {
+        suffix.tags.entry(key).or_insert(values);
+    }
     Ok(suffix)
 }
 
