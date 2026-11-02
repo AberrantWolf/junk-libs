@@ -68,3 +68,33 @@ fn truncated_flac_and_inconsistent_envelopes_fail() {
         "inconsistent coordinates cannot be advertised as searchable"
     );
 }
+
+#[test]
+fn prefix_decode_keeps_recorded_duration_and_stops_before_tail() {
+    use junk_libs_music::fingerprint::compute_window;
+    let bytes = include_bytes!("fixtures/prefix-125s.flac");
+    let full = compute(source(bytes, "flac"), &mut || Ok(())).unwrap();
+    let mut checks = 0;
+    let prefix = compute_window(source(bytes, "flac"), 8000 * 125, &mut || {
+        checks += 1;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(prefix.fingerprint, full.fingerprint);
+    assert_eq!(prefix.total_frames(), 8000 * 125);
+    assert_eq!(prefix.decoded_frames, 8000 * 120);
+    assert_eq!(prefix.duration_ms, 125000);
+    assert!(checks < 2 * (8000 * 125 / 4096));
+    let mut invalid = prefix.clone();
+    invalid.total_frames = Some(8000 * 119);
+    assert!(invalid.validate().is_err());
+    assert!(compute_window(source(bytes, "flac"), 8000 * 126, &mut || Ok(())).is_err());
+    assert!(compute_window(source(bytes, "flac"), 0, &mut || Ok(())).is_err());
+    assert!(compute_window(source(bytes, "flac"), u64::MAX, &mut || Ok(())).is_err());
+    assert!(matches!(
+        compute_window(source(bytes, "flac"), 8000 * 125, &mut || Err(
+            Error::Cancelled
+        )),
+        Err(Error::Cancelled)
+    ));
+}
