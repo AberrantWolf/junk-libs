@@ -488,3 +488,42 @@ fn ape_cover_mpeg_bytes_never_become_audio_or_distort_exact_seeks() {
         );
     }
 }
+
+#[test]
+fn id3_prefix_preserves_flac_metadata_and_full_frame_count() {
+    let body = id3_frame(4, b"TIT2", b"\x03Tagged FLAC");
+    let mut bytes = b"ID3\x04\x00\x00\x00\x00\x00".to_vec();
+    bytes.push(body.len() as u8);
+    bytes.extend(body);
+    bytes.extend(fixture("flac-48000-24-2.flac"));
+    let info = inspect_file_audio(source(bytes.clone(), "flac"), &mut || Ok(())).unwrap();
+    assert_eq!(info.codec, "flac");
+    assert_eq!(info.tag("title"), Some("Tagged FLAC"));
+    assert_eq!(info.decoded_frames, Some(480));
+    bytes.truncate(bytes.len() - 8);
+    assert!(inspect_file_audio(source(bytes, "flac"), &mut || Ok(())).is_err());
+}
+
+#[test]
+fn ape_exporter_footer_takes_priority_over_embedded_id3_signature() {
+    let mut bytes = fixture("mp3-44100-no-xing.mp3");
+    let expected = inspect_file_audio(source(bytes.clone(), "mp3"), &mut || Ok(())).unwrap();
+    if &bytes[bytes.len() - 128..bytes.len() - 125] == b"TAG" {
+        bytes.truncate(bytes.len() - 128);
+    }
+    let mut tag = ape_tag(
+        &[("Album Artist", 0, b"Example"), ("Padding", 2, &[0; 110])],
+        true,
+    );
+    let footer = tag.len() - 32;
+    tag[20..24].copy_from_slice(&0xe0000000u32.to_le_bytes());
+    tag[footer + 20..footer + 24].copy_from_slice(&0xd0000000u32.to_le_bytes());
+    let marker = tag.len() - 128;
+    tag[marker..marker + 5].copy_from_slice(b"TAGEX");
+    let obsolete = tag[..32].to_vec();
+    bytes.extend(obsolete);
+    bytes.extend(tag);
+    let info = inspect_file_audio(source(bytes, "mp3"), &mut || Ok(())).unwrap();
+    assert_eq!(info.decoded_frames, expected.decoded_frames);
+    assert_eq!(info.tag("album_artist"), Some("Example"));
+}

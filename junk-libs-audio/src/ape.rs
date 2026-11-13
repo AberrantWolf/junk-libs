@@ -36,7 +36,7 @@ pub(crate) fn suffix(
         || !(32..=32 * 1024 * 1024).contains(&size)
         || size > end
         || count > 256
-        || flags & !0x8000_0001 != 0
+        || !(flags & !1 == 0 || flags & !1 == 0x8000_0000 || flags == 0xd000_0000)
         || footer[24..] != [0; 8]
     {
         return Err(invalid());
@@ -48,9 +48,32 @@ pub(crate) fn suffix(
         let mut header = [0; 32];
         reader.read_exact(&mut header).map_err(io_error)?;
         let mut expected = footer;
-        expected[20..24].copy_from_slice(&(flags | 0x2000_0000).to_le_bytes());
+        // Some exporters emit this header/footer flag pair. The physical
+        // footer and matching header still establish the complete tag bounds.
+        let header_flags = if flags == 0xd000_0000 {
+            0xe000_0000
+        } else {
+            flags | 0x2000_0000
+        };
+        expected[20..24].copy_from_slice(&header_flags.to_le_bytes());
         if header != expected {
             return Err(invalid());
+        }
+        // The same exporter can leave a single obsolete header directly
+        // before the replacement tag. Only accept the observed header form.
+        if flags == 0xd000_0000 && start >= 32 {
+            reader.seek(SeekFrom::Start(start - 32)).map_err(io_error)?;
+            let mut prior = [0; 32];
+            reader.read_exact(&mut prior).map_err(io_error)?;
+            if &prior[..8] == b"APETAGEX"
+                && word(&prior, 8) == 2000
+                && (32..=32 * 1024 * 1024).contains(&word(&prior, 12))
+                && word(&prior, 16) <= 256
+                && word(&prior, 20) == 0xe000_0000
+                && prior[24..] == [0; 8]
+            {
+                start -= 32;
+            }
         }
     }
     let mut position = end - size;

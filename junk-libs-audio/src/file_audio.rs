@@ -103,10 +103,9 @@ pub(crate) fn decoder_suffix(
     checkpoint()?;
     let end = reader.seek(SeekFrom::End(0)).map_err(error)?;
     reader.seek(SeekFrom::Start(0)).map_err(error)?;
-    let mut signature = [0; 4];
-    reader.read_exact(&mut signature).map_err(error)?;
-    let result = if &signature[..3] == b"ID3" || signature[0] == 0xff && signature[1] & 0xe0 == 0xe0
-    {
+    let (offset, signature) = audio_signature(reader, end)?;
+    reader.seek(SeekFrom::Start(offset)).map_err(error)?;
+    let result = if signature[0] == 0xff && signature[1] & 0xe0 == 0xe0 {
         let (audio_end, suffix) = read_mp3_suffix(reader, end, checkpoint)?;
         #[cfg(feature = "decode-compressed")]
         let suffix = with_id3_footer(suffix, reader)?;
@@ -124,19 +123,75 @@ fn read_mp3_suffix(
     end: u64,
     checkpoint: &mut dyn FnMut() -> Result<(), AudioDecodeError>,
 ) -> Result<(u64, FileAudioInfo), AudioDecodeError> {
-    use std::io::SeekFrom;
-    let error = |e: std::io::Error| AudioDecodeError::Decoder(e.to_string());
-    let mut audio_end = end;
-    checkpoint()?;
-    if end >= 128 {
-        reader.seek(SeekFrom::Start(end - 128)).map_err(error)?;
-        let mut tag = [0; 3];
-        reader.read_exact(&mut tag).map_err(error)?;
-        if &tag == b"TAG" {
-            audio_end -= 128;
-        }
+    // APE items can contain TAGEX at EOF-128. Check a complete APE footer
+    // before considering the short ID3v1 signature.
+    let (audio_end, info) = crate::ape::suffix(reader, end, checkpoint)?;
+    if audio_end != end {
+        return Ok((audio_end, info));
     }
-    crate::ape::suffix(reader, audio_end, checkpoint)
+    checkpoint()?;
+    if id3v1_present(reader, end)? {
+        return crate::ape::suffix(reader, end - 128, checkpoint);
+    }
+    Ok((end, info))
+}
+
+fn id3v1_present(
+    reader: &mut dyn crate::AudioReadSeek,
+    end: u64,
+) -> Result<bool, AudioDecodeError> {
+    use std::io::SeekFrom;
+    if end < 128 {
+        return Ok(false);
+    }
+    let error = |e: std::io::Error| AudioDecodeError::Decoder(e.to_string());
+    reader.seek(SeekFrom::Start(end - 128)).map_err(error)?;
+    let mut marker = [0; 3];
+    reader.read_exact(&mut marker).map_err(error)?;
+    if &marker != b"TAG" {
+        return Ok(false);
+    }
+    reader.seek(SeekFrom::Start(end - 32)).map_err(error)?;
+    let mut footer = [0; 8];
+    reader.read_exact(&mut footer).map_err(error)?;
+    Ok(&footer != b"APETAGEX")
+}
+
+/// Return the first codestream signature after a bounded ID3v2 prefix.
+fn audio_signature(
+    reader: &mut dyn crate::AudioReadSeek,
+    end: u64,
+) -> Result<(u64, [u8; 4]), AudioDecodeError> {
+    use std::io::SeekFrom;
+    let invalid = || AudioDecodeError::Decoder("malformed or truncated audio structure".into());
+    reader.seek(SeekFrom::Start(0)).map_err(|_| invalid())?;
+    let mut header = [0; 10];
+    reader.read_exact(&mut header).map_err(|_| invalid())?;
+    let mut signature = header[..4].try_into().unwrap();
+    if &header[..3] != b"ID3" {
+        return Ok((0, signature));
+    }
+    if !matches!(header[3], 2..=4) || header[6..].iter().any(|b| b & 0x80 != 0) {
+        return Err(invalid());
+    }
+    let size = header[6..]
+        .iter()
+        .fold(0u64, |n, b| (n << 7) | u64::from(*b));
+    let offset = 10
+        + size
+        + if header[3] == 4 && header[5] & 0x10 != 0 {
+            10
+        } else {
+            0
+        };
+    if size > 32 * 1024 * 1024 || offset + 4 > end {
+        return Err(invalid());
+    }
+    reader
+        .seek(SeekFrom::Start(offset))
+        .map_err(|_| invalid())?;
+    reader.read_exact(&mut signature).map_err(|_| invalid())?;
+    Ok((offset, signature))
 }
 
 /// Decode every frame with cooperative cancellation. The byte reader must also
@@ -200,13 +255,9 @@ fn validate_structure(
     let end = reader
         .seek(SeekFrom::End(0))
         .map_err(|e| AudioDecodeError::Decoder(e.to_string()))?;
-    reader
-        .seek(SeekFrom::Start(0))
-        .map_err(|e| AudioDecodeError::Decoder(e.to_string()))?;
-    let mut signature = [0; 10];
-    reader.read_exact(&mut signature).map_err(|_| invalid())?;
+    let (audio_start, signature) = audio_signature(reader, end)?;
     if &signature[..4] == b"fLaC" {
-        let mut position = 4u64;
+        let mut position = audio_start + 4;
         let mut first = true;
         let mut metadata_bytes = 0u64;
         loop {
@@ -238,27 +289,7 @@ fn validate_structure(
     } else {
         let (end, parsed) = read_mp3_suffix(reader, end, checkpoint)?;
         suffix = parsed;
-        let mut position = 0u64;
-        if &signature[..3] == b"ID3" {
-            if !matches!(signature[3], 2..=4) || signature[6..10].iter().any(|b| b & 0x80 != 0) {
-                return Err(invalid());
-            }
-            let length = signature[6..10]
-                .iter()
-                .fold(0u64, |n, b| (n << 7) | u64::from(*b));
-            if length > 32 * 1024 * 1024 {
-                return Err(AudioDecodeError::Decoder(
-                    "ID3 metadata exceeds 32 MiB".into(),
-                ));
-            }
-            position = 10
-                + length
-                + if signature[3] == 4 && signature[5] & 0x10 != 0 {
-                    10
-                } else {
-                    0
-                };
-        }
+        let mut position = audio_start;
         let mut frames = 0u64;
         while position < end {
             checkpoint()?;
@@ -341,7 +372,7 @@ fn read_id3_footer(
     let error = |e: std::io::Error| AudioDecodeError::Decoder(e.to_string());
     let end = reader.seek(SeekFrom::End(0)).map_err(error)?;
     let mut info = FileAudioInfo::default();
-    if end >= 128 {
+    if id3v1_present(reader, end)? {
         reader.seek(SeekFrom::End(-128)).map_err(error)?;
         let mut bytes = [0; 128];
         reader.read_exact(&mut bytes).map_err(error)?;
@@ -373,8 +404,9 @@ pub(crate) fn validate_metadata_prefix(
     reader.seek(SeekFrom::Start(0)).map_err(io_error)?;
     let mut signature = [0u8; 10];
     reader.read_exact(&mut signature).map_err(io_error)?;
-    if &signature[..4] == b"fLaC" {
-        let mut pos = 4u64;
+    let (audio_start, audio) = audio_signature(reader, end)?;
+    if &audio == b"fLaC" {
+        let mut pos = audio_start + 4;
         let mut blocks = 0;
         let mut total = 0u64;
         loop {
@@ -459,7 +491,9 @@ pub(crate) fn validate_metadata_prefix(
                 break;
             }
         }
-    } else if &signature[..3] == b"ID3" {
+    }
+    if &signature[..3] == b"ID3" {
+        reader.seek(SeekFrom::Start(10)).map_err(io_error)?;
         let version = signature[3];
         if !(2..=4).contains(&version) || signature[6..10].iter().any(|b| b & 0x80 != 0) {
             return Err(invalid());
