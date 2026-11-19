@@ -1,5 +1,7 @@
 //! Bounded integer FLAC comparison and strict generated Ogg Opus inspection.
 use std::io::{Error, ErrorKind, Read, Result};
+
+use crate::ogg::{OpusHead, PAGE_HEADER_LEN, PageHeader, page_crc};
 const IO_FRAMES: usize = 16384;
 const MAX_OPUS_PACKET_BYTES: usize = 1024 * 1024;
 fn invalid(message: String) -> Error {
@@ -85,54 +87,42 @@ pub fn inspect_opus(
     let mut ended = false;
     loop {
         checkpoint()?;
-        let mut header = [0_u8; 27];
-        if scratch.read(&mut header[..1])? == 0 {
+        let mut raw = [0_u8; PAGE_HEADER_LEN];
+        if scratch.read(&mut raw[..1])? == 0 {
             break;
         }
-        scratch.read_exact(&mut header[1..])?;
+        scratch.read_exact(&mut raw[1..])?;
         if ended {
             return Err(invalid("data after Ogg EOS".into()));
         }
-        if &header[..4] != b"OggS" || header[4] != 0 {
-            return Err(invalid("invalid Ogg Opus page".into()));
-        }
-        let page_serial = u32::from_le_bytes(header[14..18].try_into().unwrap());
-        let page_sequence = u32::from_le_bytes(header[18..22].try_into().unwrap());
-        let flags = header[5];
-        if flags & !7 != 0
-            || page_sequence != sequence
-            || serial.is_some_and(|s| s != page_serial)
-            || (flags & 2 != 0) != (sequence == 0)
-            || (flags & 1 != 0) == packet.is_empty()
+        let header =
+            PageHeader::parse(&raw).ok_or_else(|| invalid("invalid Ogg Opus page".into()))?;
+        let known_flags = PageHeader::CONTINUED | PageHeader::BOS | PageHeader::EOS;
+        if header.flags & !known_flags != 0
+            || header.sequence != sequence
+            || serial.is_some_and(|s| s != header.serial)
+            || header.is_bos() != (sequence == 0)
+            || (header.flags & PageHeader::CONTINUED != 0) == packet.is_empty()
         {
             return Err(invalid("invalid Ogg stream continuity".into()));
         }
-        serial = Some(page_serial);
+        serial = Some(header.serial);
         sequence = sequence
             .checked_add(1)
             .ok_or_else(|| invalid("Ogg sequence overflow".into()))?;
-        ended = flags & 4 != 0;
-        let granule = u64::from_le_bytes(header[6..14].try_into().unwrap());
-        if granule != u64::MAX {
+        ended = header.is_eos();
+        let granule = header.granule;
+        if granule != PageHeader::NO_GRANULE {
             if final_granule.is_some_and(|previous| granule < previous) {
                 return Err(invalid("Ogg granule moved backwards".into()));
             }
             final_granule = Some(granule);
         }
-        let mut lacing = vec![0_u8; usize::from(header[26])];
+        let mut lacing = vec![0_u8; usize::from(header.segments)];
         scratch.read_exact(&mut lacing)?;
         let mut body = vec![0; lacing.iter().map(|v| usize::from(*v)).sum()];
         scratch.read_exact(&mut body)?;
-        let expected_crc = u32::from_le_bytes(header[22..26].try_into().unwrap());
-        header[22..26].fill(0);
-        if ogg_crc(
-            header
-                .iter()
-                .chain(lacing.iter())
-                .chain(body.iter())
-                .copied(),
-        ) != expected_crc
-        {
+        if page_crc(&raw, &lacing, &body) != header.crc {
             return Err(invalid("Ogg checksum mismatch".into()));
         }
         let completed_before = packet_index;
@@ -148,19 +138,17 @@ pub fn inspect_opus(
             if length < 255 {
                 match packet_index {
                     0 => {
-                        if packet.len() != 19
-                            || &packet[..8] != b"OpusHead"
-                            || packet[8] != 1
-                            || packet[9] != 2
-                            || packet[18] != 0
-                            || packet[16..18] != [0, 0]
-                            || sequence != 1
-                            || header[26] != 1
-                            || granule != 0
-                        {
-                            return Err(invalid("invalid stereo OpusHead".into()));
-                        }
-                        pre_skip = Some(u32::from(u16::from_le_bytes([packet[10], packet[11]])));
+                        let head = OpusHead::parse(&packet)
+                            .filter(|head| {
+                                packet.len() == OpusHead::LEN
+                                    && head.version == 1
+                                    && head.channels == 2
+                                    && head.mapping_family == 0
+                                    && head.output_gain == 0
+                            })
+                            .filter(|_| sequence == 1 && header.segments == 1 && granule == 0)
+                            .ok_or_else(|| invalid("invalid stereo OpusHead".into()))?;
+                        pre_skip = Some(u32::from(head.pre_skip));
                     }
                     1 => {
                         if !valid_tags(&packet) {
@@ -217,55 +205,19 @@ pub fn inspect_opus(
     })
 }
 
+/// The generated derivative profile uses only 20-ms packets.
 fn opus_packet_frames(packet: &[u8]) -> Result<u64> {
     if packet.len() < 2 {
         return Err(invalid("empty Opus coded frame".into()));
     }
-    let toc = *packet
-        .first()
-        .ok_or_else(|| invalid("empty Opus packet".into()))?;
-    let config = toc >> 3;
-    let per_frame = if config < 12 {
-        [480_u64, 960, 1_920, 2_880][usize::from(config % 4)]
-    } else if config < 16 {
-        [480_u64, 960][usize::from(config % 2)]
-    } else {
-        [120_u64, 240, 480, 960][usize::from(config % 4)]
-    };
-    let count = match toc & 3 {
-        0 => 1,
-        1 | 2 => 2,
-        _ => u64::from(
-            *packet
-                .get(1)
-                .ok_or_else(|| invalid("short Opus packet".into()))?
-                & 0x3f,
-        ),
-    };
-    let frames = per_frame
-        .checked_mul(count)
-        .ok_or_else(|| invalid("Opus packet duration overflow".into()))?;
+    let frames = crate::ogg::opus_packet_frames(packet)
+        .ok_or_else(|| invalid("short Opus packet".into()))?;
     if frames != 960 {
         return Err(invalid(
             "Opus packet does not use the fixed 20-ms profile".into(),
         ));
     }
     Ok(frames)
-}
-
-fn ogg_crc(bytes: impl Iterator<Item = u8>) -> u32 {
-    let mut crc = 0_u32;
-    for byte in bytes {
-        crc ^= u32::from(byte) << 24;
-        for _ in 0..8 {
-            crc = if crc & 0x80000000 != 0 {
-                (crc << 1) ^ 0x04c11db7
-            } else {
-                crc << 1
-            };
-        }
-    }
-    crc
 }
 
 fn valid_tags(packet: &[u8]) -> bool {

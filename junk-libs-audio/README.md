@@ -17,3 +17,19 @@ lengths/truncation and cancellation. The coordinated consumers are Collector and
 Trash Amp; neither needs a CDDA conversion for these originals. No additional
 codec/gapless qualification is implied. All-feature workspace tests, strict
 all-target/all-feature Clippy and formatting passed for this delivery.
+
+## Ogg Opus decoding — 2026-11-19
+
+`decode-opus` registers a libopus-backed codec with `AudioDecoder`'s codec
+registry. Symphonia 0.5's Ogg reader does not apply Opus pre-skip, and on
+single-page streams it trims the start rather than the end. So Ogg Opus is
+read with Symphonia gapless trimming off, and `AudioDecoder` applies RFC 7845
+timing from its own bounded scan: the `OpusHead` on the first page and the
+final page's granule position. That timing covers pre-skip, end trim, Q7.8
+output gain, `total_frames = granule - pre-skip`, and seeks that decode at
+least 3840 frames before the target. Mapping families other than 0 fail with
+`UnsupportedOpusChannelMapping`; chained or multiplexed streams fail with
+`UnsupportedOggLayout`. Without the feature, Opus fails with `UnsupportedCodec`.
+`tests/opus.rs` encodes its fixtures with the bundled libopus and compares
+the output against a reference libopus decode.
+

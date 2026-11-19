@@ -30,6 +30,7 @@ Use individual crates for reusable parsing, hashing, audio, rendering, and UI pr
 
 - `decode-wav`: PCM-WAV decoding and exact frame seeking.
 - `decode-compressed`: Symphonia codec support, including FLAC; exact seek and truncation checks have an independent FLAC test vector.
+- `decode-opus`: Ogg Opus (`.opus`, or Opus in `.ogg`) through bundled libopus via `symphonia-adapter-libopus` 0.2, which needs a C toolchain and CMake. RFC 7845 pre-skip, end trim, output gain and sample-exact seeking with 80 ms pre-roll are applied. Mono/stereo (channel mapping family 0) only; other families, and chained or multiplexed Ogg streams, are rejected with dedicated errors.
 - `disc-readers`: adapters for already-open CUE and redumper readers.
 - `resample`: bounded streaming sinc resampling. With `decode-compressed`, adds cancellable sequence conversion that retains resampler phase across compatible adjacent sources.
 - `derivative-validation`: FLAC integer-PCM comparison and Ogg Opus structure inspection.

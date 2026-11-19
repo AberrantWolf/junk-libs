@@ -16,10 +16,24 @@ mod wav;
 #[cfg(feature = "decode-wav")]
 pub use wav::WavDecoder;
 
-#[cfg(any(feature = "decode-wav", feature = "decode-compressed"))]
+#[cfg(any(
+    feature = "decode-wav",
+    feature = "decode-compressed",
+    feature = "decode-opus"
+))]
 mod media;
-#[cfg(any(feature = "decode-wav", feature = "decode-compressed"))]
+#[cfg(any(
+    feature = "decode-wav",
+    feature = "decode-compressed",
+    feature = "decode-opus"
+))]
 pub use media::{AudioDecodeError, AudioDecoder};
+
+#[cfg(any(feature = "derivative-validation", feature = "decode-opus"))]
+mod ogg;
+
+#[cfg(feature = "decode-opus")]
+mod opus;
 
 #[cfg(feature = "disc-readers")]
 mod disc;
@@ -250,10 +264,22 @@ mod sequence;
 #[cfg(all(feature = "decode-compressed", feature = "resample"))]
 pub use sequence::{SequenceSource, decode_sequence};
 
-#[cfg(any(feature = "decode-wav", feature = "decode-compressed"))]
+#[cfg(any(
+    feature = "decode-wav",
+    feature = "decode-compressed",
+    feature = "decode-opus"
+))]
 mod file_audio;
-#[cfg(any(feature = "decode-wav", feature = "decode-compressed"))]
+#[cfg(any(
+    feature = "decode-wav",
+    feature = "decode-compressed",
+    feature = "decode-opus"
+))]
 pub use file_audio::{FileAudioInfo, inspect_file_audio, inspect_file_audio_metadata};
 
-#[cfg(any(feature = "decode-wav", feature = "decode-compressed"))]
+#[cfg(any(
+    feature = "decode-wav",
+    feature = "decode-compressed",
+    feature = "decode-opus"
+))]
 mod ape;
