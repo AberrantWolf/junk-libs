@@ -103,3 +103,58 @@ fn games_without_roms_are_kept() {
         assert!(dat.games[0].roms.is_empty());
     }
 }
+
+#[test]
+fn text_entities_and_cdata_join_into_one_value() {
+    let xml = r#"<datafile><header>
+        <name>  Games &amp; More &#x65E5;&#26412;  </name>
+        <version>1<![CDATA[ & 2]]> &amp; 3</version>
+        </header><game name="Title &amp; More">
+        <serial>AB &amp; CD</serial>
+        <rom name="a.bin" size="4" crc="AABBCCDD"/>
+        </game></datafile>"#;
+    for capacity in [1, 8192] {
+        let dat = parse_dat(std::io::BufReader::with_capacity(capacity, xml.as_bytes())).unwrap();
+        assert_eq!(dat.name, "Games & More 日本");
+        assert_eq!(dat.version, "1 & 2 & 3");
+        assert_eq!(dat.games[0].name, "Title & More");
+        assert_eq!(dat.games[0].serial.as_deref(), Some("AB & CD"));
+    }
+}
+
+#[test]
+fn unknown_and_dtd_entities_fail() {
+    for value in ["&unknown;", "&#x110000;", "&amp"] {
+        let xml = format!("<datafile><header><name>{value}</name></header></datafile>");
+        assert!(parse_dat(xml.as_bytes()).is_err(), "{value}");
+    }
+    let xml = br#"<!DOCTYPE datafile [<!ENTITY t "x">]><datafile><header><name>&t;</name></header></datafile>"#;
+    assert!(parse_dat(xml.as_slice()).is_err());
+}
+
+#[test]
+fn delimiters_inside_an_event_do_not_reset_the_read_bound() {
+    let docs = |n: usize| {
+        [
+            format!(
+                "<datafile><header><name>{}</name></header><game name=\"g\" description=\"{}\"/></datafile>",
+                "x",
+                ">".repeat(n)
+            ),
+            format!(
+                "<datafile><header><name>x</name></header><!--{}--></datafile>",
+                "<>".repeat(n)
+            ),
+            format!(
+                "<datafile><header><name><![CDATA[{}]]></name></header></datafile>",
+                "<>".repeat(n)
+            ),
+        ]
+    };
+    for xml in docs(10) {
+        parse_dat(xml.as_bytes()).unwrap();
+    }
+    for xml in docs(65537) {
+        assert!(parse_dat(xml.as_bytes()).is_err());
+    }
+}

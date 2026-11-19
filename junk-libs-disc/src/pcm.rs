@@ -550,3 +550,73 @@ impl SourcePcmReader {
         })
     }
 }
+
+/// Several PCM readers played back to back as one timeline.
+///
+/// A member that ends before its advertised length is an error, never padding.
+pub struct PcmSequenceReader {
+    /// Each member's start on the joined timeline, its length, and its reader.
+    members: Vec<(u64, u64, Box<dyn CdPcmReader + Send>)>,
+    frames: u64,
+    position: u64,
+}
+
+impl PcmSequenceReader {
+    pub fn new(readers: Vec<Box<dyn CdPcmReader + Send>>) -> Result<Self, AnalysisError> {
+        let mut frames = 0u64;
+        let mut members = Vec::with_capacity(readers.len());
+        for reader in readers {
+            let length = reader.total_frames();
+            if length == 0 {
+                continue;
+            }
+            members.push((frames, length, reader));
+            frames = frames
+                .checked_add(length)
+                .ok_or_else(|| AnalysisError::invalid_format("PCM sequence too long"))?;
+        }
+        Ok(Self {
+            members,
+            frames,
+            position: 0,
+        })
+    }
+}
+
+impl CdPcmReader for PcmSequenceReader {
+    fn total_frames(&self) -> u64 {
+        self.frames
+    }
+
+    fn seek_frame(&mut self, frame: u64) -> Result<(), AnalysisError> {
+        if frame > self.frames {
+            return Err(AnalysisError::invalid_format("seek beyond PCM sequence"));
+        }
+        self.position = frame;
+        Ok(())
+    }
+
+    fn read_frames(&mut self, out: &mut [[i16; 2]]) -> Result<usize, AnalysisError> {
+        if out.is_empty() || self.position == self.frames {
+            return Ok(0);
+        }
+        let index = self
+            .members
+            .partition_point(|(start, _, _)| *start <= self.position)
+            - 1;
+        let (start, length, reader) = &mut self.members[index];
+        let offset = self.position - *start;
+        let count = out
+            .len()
+            .min((*length - offset).try_into().unwrap_or(usize::MAX));
+        reader.seek_frame(offset)?;
+        let read = reader.read_frames(&mut out[..count])?;
+        if read == 0 || read > count {
+            return Err(AnalysisError::invalid_format(
+                "PCM sequence member ended before its length",
+            ));
+        }
+        self.position += read as u64;
+        Ok(read)
+    }
+}

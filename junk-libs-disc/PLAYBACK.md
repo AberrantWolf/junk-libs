@@ -33,6 +33,16 @@ rejected rather than converted, because they can change audio placement.
   audio). It is not part of track 1; read it with `range_reader`.
 - `range_reader` rejects any range that touches a data track.
 
+`CueAudioDisc::from_text` builds the same layout from CUE text and a callback
+giving each FILE's byte length, without opening anything. Read it with
+`range_reader_with`, which asks a callback for a seekable source per CUE FILE
+name. Only files overlapping the range are opened, so data tracks never are.
+Each source must still have its recorded length. `open`/`range_reader` are the
+filesystem versions of these.
+
+`pcm::PcmSequenceReader` plays several `CdPcmReader`s back to back as one
+timeline, for example a run of tracks converted together.
+
 ## Sector and hash APIs: `cue`, `layout`, `pcm::TrackPcmReader`
 
 These describe tracks in absolute sectors (lead-in of 150 applied) with

@@ -10,7 +10,7 @@ use junk_libs_core::AnalysisError;
 use std::{
     collections::BTreeMap,
     fs::File,
-    io::{BufReader, Read, Seek},
+    io::{BufReader, Read, SeekFrom},
     path::{Path, PathBuf},
 };
 
@@ -31,7 +31,8 @@ pub struct CueAudioTrack {
 struct Extent {
     start: u64,
     end: u64,
-    file: Option<(PathBuf, u64)>,
+    /// CUE FILE name and byte offset of the extent's first frame.
+    file: Option<(String, u64)>,
     audio: bool,
 }
 #[derive(Debug, Clone)]
@@ -40,7 +41,13 @@ pub struct CueAudioDisc {
     /// First-track audio before INDEX 01, including synthetic silence. Not queued implicitly.
     pub hidden_audio: Option<(u64, u64)>,
     extents: Vec<Extent>,
+    /// Byte length of each CUE FILE, as recorded when the layout was built.
+    source_lengths: BTreeMap<String, u64>,
+    /// Directory that CUE FILE names resolve against, when opened from disk.
+    base: Option<PathBuf>,
 }
+/// A seekable byte source for one CUE FILE.
+pub type CueSource = Box<dyn junk_libs_core::ReadSeek + Send>;
 #[derive(Default)]
 struct Extras {
     pre: Option<u64>,
@@ -69,18 +76,35 @@ impl CueAudioDisc {
     pub fn open(path: &Path) -> Result<Self, AnalysisError> {
         let text = std::fs::read_to_string(path)?;
         let dir = path.parent().unwrap_or(Path::new("."));
+        let mut disc = Self::from_text(&text, |name| {
+            Ok(std::fs::metadata(cue::resolve_local_file(dir, name)?)?.len())
+        })?;
+        disc.base = Some(dir.to_owned());
+        Ok(disc)
+    }
+
+    /// Build the layout from CUE text and each FILE's byte length, without
+    /// touching any payload. Read it later with [`Self::range_reader_with`].
+    pub fn from_text(
+        text: &str,
+        mut file_length: impl FnMut(&str) -> Result<u64, AnalysisError>,
+    ) -> Result<Self, AnalysisError> {
         // Nonstandard (CDRWin) directives can affect audio placement; reject rather
         // than silently converting them away.
-        if !cue::check_cue_compat(&text).is_standard() {
+        if !cue::check_cue_compat(text).is_standard() {
             return Err(AnalysisError::unsupported(
                 "playback layout requires a standard BIN/CUE sheet",
             ));
         }
-        let sheet = cue::parse_cue(&text)?;
+        let sheet = cue::parse_cue(text)?;
 
-        let resolved = cue::compute_cue_resolved_layout(&sheet, |name| {
-            Ok(std::fs::metadata(cue::resolve_local_file(dir, name)?)?.len())
-        })?;
+        let mut source_lengths = BTreeMap::new();
+        for file in &sheet.files {
+            if !source_lengths.contains_key(&file.filename) {
+                source_lengths.insert(file.filename.clone(), file_length(&file.filename)?);
+            }
+        }
+        let resolved = cue::compute_cue_resolved_layout(&sheet, |name| Ok(source_lengths[name]))?;
         let mut extras = BTreeMap::<u8, Extras>::new();
         let mut current = None;
         for line in text.lines() {
@@ -137,11 +161,12 @@ impl CueAudioDisc {
             tracks: vec![],
             hidden_audio: None,
             extents: vec![],
+            source_lengths,
+            base: None,
         };
         let mut position = 0;
         let mut beginnings = Vec::new();
         for (file, source) in sheet.files.iter().zip(&resolved.files) {
-            let path = cue::resolve_local_file(dir, &file.filename)?;
             for (i, track) in file.tracks.iter().enumerate() {
                 let kind = classify_mode(&track.mode);
                 let audio = kind == TrackKind::Audio;
@@ -198,7 +223,7 @@ impl CueAudioDisc {
                 result.push(
                     &mut position,
                     end - first,
-                    Some((path.clone(), first / 588 * source.frame_bytes)),
+                    Some((file.filename.clone(), first / 588 * source.frame_bytes)),
                     audio,
                 )?;
                 if let Some(n) = e.post {
@@ -238,7 +263,7 @@ impl CueAudioDisc {
         &mut self,
         position: &mut u64,
         n: u64,
-        file: Option<(PathBuf, u64)>,
+        file: Option<(String, u64)>,
         audio: bool,
     ) -> Result<(), AnalysisError> {
         let end = position
@@ -266,7 +291,27 @@ impl CueAudioDisc {
         }
         self.range_reader(t.start_frame, t.end_frame)
     }
+    /// Read a range from the files next to the CUE sheet. Only for discs built
+    /// with [`Self::open`]; use [`Self::range_reader_with`] otherwise.
     pub fn range_reader(&self, start: u64, end: u64) -> Result<CueAudioReader, AnalysisError> {
+        let base = self.base.as_deref().ok_or_else(|| {
+            AnalysisError::unsupported("CUE layout has no directory; use range_reader_with")
+        })?;
+        self.range_reader_with(start, end, |name| {
+            let file = File::open(cue::resolve_local_file(base, name)?)?;
+            Ok(Box::new(BufReader::new(file)))
+        })
+    }
+
+    /// Read an audio range from caller-supplied sources, opened by CUE FILE
+    /// name. Only files overlapping the range are opened, and each must still
+    /// have the length recorded when the layout was built.
+    pub fn range_reader_with(
+        &self,
+        start: u64,
+        end: u64,
+        mut open: impl FnMut(&str) -> Result<CueSource, AnalysisError>,
+    ) -> Result<CueAudioReader, AnalysisError> {
         if start > end
             || end > self.extents.last().map(|e| e.end).unwrap_or(0)
             || self
@@ -276,12 +321,29 @@ impl CueAudioDisc {
         {
             return Err(invalid("range includes non-audio or lies outside CUE"));
         }
+        let mut sources = BTreeMap::new();
+        for extent in self
+            .extents
+            .iter()
+            .filter(|e| e.start < end && e.end > start)
+        {
+            if let Some((name, _)) = &extent.file
+                && !sources.contains_key(name)
+            {
+                let mut source = open(name)?;
+                let length = source.seek(SeekFrom::End(0))?;
+                if length != self.source_lengths[name] {
+                    return Err(invalid("CUE source length changed"));
+                }
+                sources.insert(name.clone(), (source, length));
+            }
+        }
         Ok(CueAudioReader {
             extents: self.extents.clone(),
             start,
             length: end - start,
             position: 0,
-            current: None,
+            sources,
         })
     }
 }
@@ -290,7 +352,8 @@ pub struct CueAudioReader {
     start: u64,
     length: u64,
     position: u64,
-    current: Option<(PathBuf, BufReader<File>)>,
+    /// Open sources by CUE FILE name, with each one's current byte position.
+    sources: BTreeMap<String, (CueSource, u64)>,
 }
 impl CueAudioReader {
     pub fn total_frames(&self) -> u64 {
@@ -320,16 +383,23 @@ impl CueAudioReader {
             .len()
             .min(588)
             .min((e.end - absolute).min(self.length - self.position).min(588) as usize);
-        if let Some((path, offset)) = &e.file {
-            if self.current.as_ref().is_none_or(|(p, _)| p != path) {
-                self.current = Some((path.clone(), BufReader::new(File::open(path)?)));
-            }
-            let r = &mut self.current.as_mut().unwrap().1;
+        if let Some((name, offset)) = &e.file {
+            let (r, at) = self
+                .sources
+                .get_mut(name)
+                .ok_or_else(|| invalid("CUE source not opened"))?;
             let target = offset + (absolute - e.start) * 4;
-            let current = r.stream_position()?;
-            r.seek_relative(target as i64 - current as i64)?;
+            // Skip the seek for sequential reads so buffered sources stay buffered.
+            if *at != target {
+                r.seek(SeekFrom::Start(target))?;
+                *at = target;
+            }
             let mut bytes = [0; 2352];
-            r.read_exact(&mut bytes[..n * 4])?;
+            if let Err(error) = r.read_exact(&mut bytes[..n * 4]) {
+                *at = u64::MAX; // Position unknown after a partial read.
+                return Err(error.into());
+            }
+            *at += n as u64 * 4;
             for (o, b) in out[..n].iter_mut().zip(bytes.as_chunks::<4>().0) {
                 *o = [
                     i16::from_le_bytes([b[0], b[1]]),

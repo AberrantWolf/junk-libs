@@ -8,7 +8,7 @@ The crates provide parsing, hashing, audio, rendering and UI building blocks. Ap
 
 | Crate | Purpose |
 |---|---|
-| `junk-libs-core` | Streaming CRC32/MD5/SHA-1 hashing, checksum types, reader traits, filename grouping. |
+| `junk-libs-core` | Streaming CRC32/MD5/SHA-1 hashing, checksum types, reader traits, filename grouping, PDF/text document classification. |
 | `junk-libs-disc` | CUE, CHD, ISO 9660 and redumper parsing; CD sector and PCM readers. See [PLAYBACK.md](junk-libs-disc/PLAYBACK.md). |
 | `junk-libs-disc-id` | MusicBrainz, FreeDB/CDDB and AccurateRip disc IDs from a TOC. |
 | `junk-libs-accuraterip` | AccurateRip v1/v2 checksums, dBAR parsing, matching and sample-offset search. |

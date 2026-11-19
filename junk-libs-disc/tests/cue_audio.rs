@@ -83,3 +83,48 @@ fn malformed_gaps_indexes_and_four_channel_flags_are_rejected() {
         assert!(CueAudioDisc::open(&path).is_err(), "{directives}");
     }
 }
+
+#[test]
+fn caller_sources_open_only_audio_files_with_their_recorded_length() {
+    use std::io::Cursor;
+    let cue = "FILE \"data.bin\" BINARY\n TRACK 01 MODE2/2352\n INDEX 01 00:00:00\nFILE \"audio.bin\" BINARY\n TRACK 02 AUDIO\n INDEX 00 00:00:00\n INDEX 01 00:00:01\n TRACK 03 AUDIO\n INDEX 00 00:00:02\n INDEX 01 00:00:03\n";
+    let disc = CueAudioDisc::from_text(cue, |_| Ok(4 * 2352)).unwrap();
+    let pcm = [11i16, 22, 33, 44]
+        .into_iter()
+        .flat_map(|v| [v.to_le_bytes(), (-v).to_le_bytes()].concat().repeat(588))
+        .collect::<Vec<_>>();
+    let track = &disc.tracks[1];
+    let reader = disc
+        .range_reader_with(track.start_frame, track.end_frame, |name| {
+            assert_eq!(name, "audio.bin");
+            Ok(Box::new(Cursor::new(pcm.clone())))
+        })
+        .unwrap();
+    let output = collect(reader);
+    assert_eq!(output.len(), 2 * 588);
+    assert!(output[..588].iter().all(|f| *f == [22, -22]));
+    assert!(output[588..].iter().all(|f| *f == [33, -33]));
+
+    let short = pcm[..pcm.len() - 4].to_vec();
+    assert!(
+        disc.range_reader_with(track.start_frame, track.end_frame, |_| {
+            Ok(Box::new(Cursor::new(short.clone())))
+        })
+        .is_err()
+    );
+    // Without a directory there is nothing for range_reader to open.
+    assert!(disc.track_reader(2).is_err());
+}
+
+#[test]
+fn truncation_after_opening_a_reader_is_an_error() {
+    let (dir, path) = fixture("FILE \"one.bin\" BINARY\n TRACK 01 AUDIO\n INDEX 01 00:00:00\n");
+    let disc = CueAudioDisc::open(&path).unwrap();
+    let mut reader = disc.track_reader(1).unwrap();
+    let file = dir.path().join("one.bin");
+    let bytes = std::fs::read(&file).unwrap();
+    std::fs::write(file, &bytes[..2352]).unwrap();
+    let mut out = vec![[0; 2]; 588];
+    assert_eq!(reader.read_frames(&mut out).unwrap(), 588);
+    assert!(reader.read_frames(&mut out).is_err());
+}
