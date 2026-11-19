@@ -643,8 +643,10 @@ pub(crate) fn validate_metadata_prefix(
                 let offset = match value[0] {
                     0 => description.iter().position(|b| *b == 0).map(|i| i + 1),
                     1 => description
-                        .chunks_exact(2)
-                        .position(|pair| pair == [0, 0])
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .position(|pair| *pair == [0, 0])
                         .map(|i| (i + 1) * 2),
                     _ => None,
                 }

@@ -506,7 +506,7 @@ impl CdPcmReader for SourcePcmReader {
             })?
         ];
         source.reader.read_exact(&mut bytes)?;
-        for (frame, bytes) in output[..count].iter_mut().zip(bytes.chunks_exact(4)) {
+        for (frame, bytes) in output[..count].iter_mut().zip(bytes.as_chunks::<4>().0) {
             *frame = [
                 i16::from_le_bytes([bytes[0], bytes[1]]),
                 i16::from_le_bytes([bytes[2], bytes[3]]),

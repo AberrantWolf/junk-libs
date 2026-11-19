@@ -818,7 +818,7 @@ impl DocView {
                     } else if is_hover_body {
                         (HOVER, REGION_FILL, 2.0)
                     } else {
-                        (REGION_STROKE, REGION_FILL, 1.5)
+                        (REGION_STROKE, REGION_FILL, 1.5_f32)
                     };
                     if !drew_overlay {
                         painter.rect_filled(scr, 2.0, fill);
@@ -854,7 +854,7 @@ impl DocView {
                     painter.rect_stroke(
                         scr,
                         0.0,
-                        Stroke::new(1.5, ACCENT),
+                        Stroke::new(1.5_f32, ACCENT),
                         egui::StrokeKind::Inside,
                     );
                 }

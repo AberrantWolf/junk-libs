@@ -334,7 +334,7 @@ impl CueAudioReader {
             r.seek_relative(target as i64 - current as i64)?;
             let mut bytes = [0; 2352];
             r.read_exact(&mut bytes[..n * 4])?;
-            for (o, b) in out[..n].iter_mut().zip(bytes.chunks_exact(4)) {
+            for (o, b) in out[..n].iter_mut().zip(bytes.as_chunks::<4>().0) {
                 *o = [
                     i16::from_le_bytes([b[0], b[1]]),
                     i16::from_le_bytes([b[2], b[3]]),

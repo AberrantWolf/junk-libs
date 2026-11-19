@@ -25,11 +25,13 @@ fn resampler_is_bounded_contiguous_and_has_exact_output_length() {
         output.extend(chunk.samples);
     }
     assert_eq!(output.len() / 2, 400);
-    for frame in output.chunks_exact(2) {
+    for frame in output.as_chunks::<2>().0 {
         assert!((frame[0] + frame[1]).abs() < 0.000_001);
     }
     let peak_frame = output
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .enumerate()
         .max_by(|(_, left), (_, right)| left[0].abs().total_cmp(&right[0].abs()))
         .unwrap()

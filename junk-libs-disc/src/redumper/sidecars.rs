@@ -208,7 +208,9 @@ pub fn validate_full_toc_bytes(full: &[u8]) -> Result<(), AnalysisError> {
         || full[2] != 1
         || full[3] != 1
         || full[4..]
-            .chunks_exact(11)
+            .as_chunks::<11>()
+            .0
+            .iter()
             .any(|descriptor| descriptor[0] != 1)
     {
         return Err(AnalysisError::unsupported("redumper multisession playback"));

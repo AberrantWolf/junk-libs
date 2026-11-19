@@ -304,7 +304,7 @@ fn collect_label_ranges(
         }
     }
     if let Ok(numbers) = node.get(b"Nums").and_then(Object::as_array) {
-        for pair in numbers.chunks_exact(2) {
+        for pair in numbers.as_chunks::<2>().0 {
             let first_page = usize::try_from(pair[0].as_i64()?).unwrap_or(0);
             let dictionary = resolve_dictionary(document, &pair[1])?;
             let prefix = dictionary

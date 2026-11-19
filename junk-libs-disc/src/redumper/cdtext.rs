@@ -126,8 +126,10 @@ pub fn parse_cdtext_bytes(bytes: &[u8]) -> Result<CdText, AnalysisError> {
     }
 
     let packs: Vec<Pack> = packs_bytes
-        .chunks_exact(PACK_SIZE)
-        .map(Pack::from_bytes)
+        .as_chunks::<PACK_SIZE>()
+        .0
+        .iter()
+        .map(|pack| Pack::from_bytes(pack))
         .collect();
 
     // Bucket packs by (block, pack_type) and keep them in sequence order.
