@@ -7,7 +7,7 @@ use junk_libs_disc::{RAW_SECTOR_SIZE, visit_chd_raw_tracks};
 #[test]
 fn chd_visits_every_true_ordered_track_frame_without_padding_or_subchannel() {
     if Command::new("chdman").arg("--help").output().is_err() {
-        eprintln!("chdman is unavailable; synthetic CHD qualification skipped");
+        eprintln!("chdman is unavailable; skipping");
         return;
     }
     let dir = tempfile::tempdir().unwrap();

@@ -1,4 +1,4 @@
-//! Bounded APEv2 suffix parsing. Never changes the encoded source.
+//! Bounded APEv2 suffix parsing.
 use crate::{AudioDecodeError, AudioReadSeek, FileAudioInfo};
 use std::io::SeekFrom;
 
@@ -154,10 +154,7 @@ pub(crate) fn suffix(
                 let text = std::str::from_utf8(&bytes).map_err(|_| invalid())?;
                 let values = info.tags.entry(mapped.unwrap().into()).or_default();
                 for value in text.split('\0') {
-                    if value.len() > 4096
-                        || value.contains('\u{fffd}')
-                        || value.chars().any(char::is_control)
-                    {
+                    if value.len() > 4096 {
                         return Err(invalid());
                     }
                     if !values.iter().any(|v| v == value) {

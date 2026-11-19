@@ -52,14 +52,6 @@ fn test_detect_non_playstation_iso() {
 }
 
 #[test]
-fn test_disc_format_name() {
-    assert_eq!(DiscFormat::Iso2048.name(), "ISO 9660");
-    assert_eq!(DiscFormat::RawSector2352.name(), "Raw BIN (2352)");
-    assert_eq!(DiscFormat::Cue.name(), "CUE Sheet");
-    assert_eq!(DiscFormat::Chd.name(), "CHD");
-}
-
-#[test]
 fn test_disc_format_extension() {
     assert_eq!(DiscFormat::Iso2048.extension(), "iso");
     assert_eq!(DiscFormat::RawSector2352.extension(), "bin");

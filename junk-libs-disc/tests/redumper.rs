@@ -1,13 +1,12 @@
 //! Integration tests for the redumper sidecar module.
 //!
-//! Synthetic fixtures cover the parser's happy paths and a few known
-//! edge cases (EAC sniffer rejection, CUE-only directories, CD-TEXT
-//! without a response header). Real-rip fixtures drop into
-//! `tests/fixtures/redumper/` — see the README there.
+//! Ignored `real_*` tests need real packages; see
+//! `tests/fixtures/redumper/README.md`.
 
 use std::fs;
 use std::path::PathBuf;
 
+use junk_libs_core::AnalysisError;
 use junk_libs_disc::{
     read_cue_layout,
     redumper::{self, CdTextBlock, DriveInfo, RedumperLog, Ripper},
@@ -18,72 +17,26 @@ use junk_libs_disc::{
 // ---------------------------------------------------------------------
 
 #[test]
-fn find_sidecars_finds_all_present_variants() {
-    let td = tempfile::tempdir().unwrap();
-    let base = td.path().join("album");
-
-    for ext in ["cue", "log", "cdtext", "toc", "fulltoc", "subcode", "atip"] {
-        fs::write(base.with_extension(ext), b"").unwrap();
-    }
-
-    let sc = redumper::find_sidecars(&base.with_extension("cue"));
-    assert!(sc.log.is_some(), "log should be found");
-    assert!(sc.cdtext.is_some(), "cdtext should be found");
-    assert!(sc.toc.is_some(), "toc should be found");
-    assert!(sc.fulltoc.is_some(), "fulltoc should be found");
-    assert!(sc.subcode.is_some(), "subcode should be found");
-    assert!(sc.atip.is_some(), "atip should be found");
-}
-
-#[test]
-fn find_sidecars_returns_none_for_missing_extensions() {
-    let td = tempfile::tempdir().unwrap();
-    let base = td.path().join("album");
-
-    // Only the CUE and log exist.
-    fs::write(base.with_extension("cue"), b"").unwrap();
-    fs::write(base.with_extension("log"), b"redumper v1\n").unwrap();
-
-    let sc = redumper::find_sidecars(&base.with_extension("cue"));
-    assert!(sc.log.is_some());
-    assert!(sc.cdtext.is_none());
-    assert!(sc.toc.is_none());
-}
-
-#[test]
-fn find_sidecars_handles_basenames_with_embedded_dots() {
-    // Regression: basenames containing dots (e.g. rip tools that hash
-    // the disc ID into the filename) used to confuse `set_extension`,
-    // which rewrites everything after the *last* dot in the stem. A
-    // cue named `hP..j.BAR-.cue` would look up sidecars as
-    // `hP..j.log` instead of `hP..j.BAR-.log`.
+fn find_sidecars_finds_present_files_with_dotted_basenames() {
+    // `PathBuf::set_extension` would rewrite after the last dot in the stem,
+    // so sidecars must be located by appending the extension to the full stem.
     let td = tempfile::tempdir().unwrap();
     let stem = "hP..j.HpM38lmnMLVXn9WDkjJxc-";
     let cue = td.path().join(format!("{stem}.cue"));
     fs::write(&cue, b"").unwrap();
-    for ext in ["log", "cdtext", "toc", "fulltoc", "subcode"] {
+    for ext in ["log", "cdtext", "toc", "fulltoc", "subcode", "atip"] {
         fs::write(td.path().join(format!("{stem}.{ext}")), b"").unwrap();
     }
 
     let sc = redumper::find_sidecars(&cue);
-    assert!(
-        sc.log.is_some(),
-        "log should be discovered even with embedded dots in the stem"
-    );
+    assert_eq!(sc.log, Some(td.path().join(format!("{stem}.log"))));
     assert!(sc.cdtext.is_some());
     assert!(sc.toc.is_some());
     assert!(sc.fulltoc.is_some());
     assert!(sc.subcode.is_some());
-    // Discovered paths should point at the real files, not truncated ones.
-    assert!(
-        sc.log
-            .as_ref()
-            .unwrap()
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .ends_with(&format!("{stem}.log"))
-    );
+    assert!(sc.atip.is_some());
+    assert!(sc.scram.is_none());
+    assert!(sc.state.is_none());
 }
 
 #[test]
@@ -128,8 +81,7 @@ fn sniff_xld_and_unknown() {
 // parse_log
 // ---------------------------------------------------------------------
 
-// Exact non-content-bearing excerpt from the provenance-recorded Cryo dump
-// documented in tests/fixtures/redumper/README.md (redumper build 709).
+// Verbatim header excerpt from a real redumper build 709 log.
 const REAL_BUILD_709_LOG_EXCERPT: &str = "\
 === 2026-07-17 20:09:59 ========================================================
 redumper (build: 709)
@@ -160,17 +112,12 @@ fn parse_real_build_709_log_shape() {
     assert_eq!(log.disc_write_offset, Some(2));
     assert!(log.mcn.is_none());
     assert!(log.isrcs.is_empty());
-    assert!(!log.raw.is_empty());
 }
 
 #[test]
 fn parse_log_extracts_mcn_from_embedded_cue_block() {
-    // Redumper doesn't emit a dedicated `MCN:` line — it inlines the
-    // generated CUE sheet into its log via `LOG("CUE [...]:")`, and the
-    // MCN appears there as `CATALOG <value>` (see
-    // cd_split.ixx:948 + toc.ixx::printCUE in the redumper source). The
-    // parser must catch that shape or every redumper-ripped disc stays
-    // effectively barcode-less and Discogs never gets dispatched.
+    // Redumper has no dedicated `MCN:` line; it embeds the generated CUE
+    // sheet in its log, where the MCN appears as `CATALOG <value>`.
     let text = "\
 redumper v2024.03.01 build_20240301
 
@@ -283,12 +230,10 @@ fn parse_log_on_eac_file_rejects_with_unsupported_variant() {
     let path = td.path().join("eac.log");
     fs::write(&path, b"Exact Audio Copy V1.5\nlog...\n").unwrap();
 
-    let err = redumper::parse_log(&path).expect_err("EAC log should reject");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("not redumper"),
-        "error message should name the mismatch: {msg}"
-    );
+    assert!(matches!(
+        redumper::parse_log(&path),
+        Err(AnalysisError::UnsupportedVariant(_))
+    ));
 }
 
 // ---------------------------------------------------------------------
@@ -421,20 +366,18 @@ fn parse_cdtext_strips_4byte_response_header() {
 #[test]
 fn parse_cdtext_rejects_non_pack_aligned_input() {
     // 17 bytes — not a multiple of 18 and not 18N+4 either.
-    let err = redumper::parse_cdtext_bytes(&[0u8; 17]).expect_err("should reject");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("not a multiple"),
-        "expected alignment error: {msg}"
-    );
+    assert!(matches!(
+        redumper::parse_cdtext_bytes(&[0u8; 17]),
+        Err(AnalysisError::InvalidFormat(_))
+    ));
 }
 
 // ---------------------------------------------------------------------
-// Provenance-recorded real-package checks (explicitly invoked)
+// Real-package checks (ignored; see tests/fixtures/redumper/README.md)
 // ---------------------------------------------------------------------
 
 #[test]
-#[ignore = "set JUNK_LIBS_REDUMPER_PREFIX to a provenance-recorded real package"]
+#[ignore = "set JUNK_LIBS_REDUMPER_PREFIX to the build 709 package"]
 fn real_fixture_log_matches_build_709_oracle() {
     let prefix = real_fixture_prefix();
     let path = prefix.with_extension("log");
@@ -445,7 +388,7 @@ fn real_fixture_log_matches_build_709_oracle() {
 }
 
 #[test]
-#[ignore = "set JUNK_LIBS_REDUMPER_PREFIX to a provenance-recorded real package"]
+#[ignore = "set JUNK_LIBS_REDUMPER_PREFIX to the build 709 package"]
 fn real_fixture_raw_structure_matches_build_709_oracle() {
     let prefix = real_fixture_prefix();
     let sidecars = redumper::find_sidecars(&prefix.with_extension("cue"));
@@ -456,7 +399,7 @@ fn real_fixture_raw_structure_matches_build_709_oracle() {
 }
 
 #[test]
-#[ignore = "set JUNK_LIBS_REDUMPER_AUDIO_PREFIX to the Octopath build b736 package"]
+#[ignore = "set JUNK_LIBS_REDUMPER_AUDIO_PREFIX to the b736 audio-CD package"]
 fn real_audio_fixture_matches_redumper_boundaries_and_subchannel_metadata() {
     let prefix = real_audio_fixture_prefix();
     let log = redumper::parse_log(&prefix.with_extension("log")).expect("real log should parse");

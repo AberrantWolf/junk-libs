@@ -147,14 +147,6 @@ impl<R: BufRead> BufRead for BoundedDatReader<R> {
         self.inner.consume(count);
     }
 }
-fn check_entry_limit(games: usize, roms: usize) -> Result<(), DatError> {
-    if games >= 100_000 || roms >= 4096 {
-        return Err(DatError::invalid_dat(
-            "DAT entry count exceeds supported bounds",
-        ));
-    }
-    Ok(())
-}
 
 /// Parse a DAT file, auto-detecting format (XML or `ClrMamePro`).
 pub fn parse_dat<R: BufRead>(mut reader: R) -> Result<DatFile, DatError> {
@@ -236,20 +228,8 @@ pub fn parse_logiqx_rom_lines(text: &str) -> Result<Vec<DatRom>, DatError> {
 // Logiqx XML parser
 // ---------------------------------------------------------------------------
 
-/// The text of one XML attribute, with entities resolved.
-///
-/// An attribute's bytes are raw document text, so a title containing `&`
-/// arrives as `&amp;`. Reading them without this stored the entity itself, and
-/// the entity then travelled everywhere the name goes: into catalog rows, into
-/// the canonical filename a playable is built under — a disc image really was
-/// called `Dragon Quest Monsters 1 &amp; 2 ...` on disk — and back out into
-/// gamelist XML, where escaping it a second time produced `&amp;amp;` and a
-/// frontend entry that pointed at no file.
-///
-/// Decoding once here is what fixes all of those, because it is the boundary
-/// they all come through. Element *text* was already unescaped; only
-/// attributes were not, which is why Redump's XML DATs were affected and
-/// No-Intro's `ClrMamePro` text DATs — which have no entities — were not.
+/// The text of one XML attribute, with entities resolved (`&amp;` → `&`), so
+/// names match their `ClrMamePro` equivalents.
 fn attribute_text(
     attr: &quick_xml::events::attributes::Attribute<'_>,
 ) -> Result<String, quick_xml::Error> {
@@ -304,9 +284,6 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
         match xml.read_event_into(&mut buf)? {
             Event::Start(ref e) => {
                 depth += 1;
-                if depth > 16 {
-                    return Err(DatError::invalid_dat("DAT XML depth exceeds 16"));
-                }
                 if depth == 1 {
                     if saw_root || e.name().as_ref() != b"datafile" {
                         return Err(DatError::invalid_dat("Expected one Logiqx datafile root"));
@@ -330,7 +307,6 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                             return Err(DatError::invalid_dat("ROM outside a game"));
                         }
                         if let Some(ref mut game) = current_game {
-                            check_entry_limit(dat.games.len(), game.roms.len())?;
                             game.roms.push(parse_xml_rom_attributes(e)?);
                         }
                     }
@@ -338,7 +314,6 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                         if current_game.is_some() || depth != 2 {
                             return Err(DatError::invalid_dat("Invalid game nesting"));
                         }
-                        check_entry_limit(dat.games.len(), 0)?;
                         current_game = Some(parse_xml_game_start(e)?);
                         game_serial = None;
                         game_version = None;
@@ -351,13 +326,15 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                 let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 if matches!(
                     tag_name.as_str(),
-                    "game" | "machine" | "disk" | "sample" | "software" | "part" | "dataarea"
+                    "machine" | "disk" | "sample" | "software" | "part" | "dataarea"
                 ) {
-                    return Err(if tag_name == "game" {
-                        DatError::invalid_dat("Empty DAT game entry")
-                    } else {
-                        DatError::Unsupported("DAT entry structure".into())
-                    });
+                    return Err(DatError::Unsupported("DAT entry structure".into()));
+                }
+                if tag_name == "game" {
+                    if current_game.is_some() || depth != 1 {
+                        return Err(DatError::invalid_dat("Invalid game nesting"));
+                    }
+                    dat.games.push(parse_xml_game_start(e)?);
                 }
                 if tag_name == "rom" && (depth != 2 || current_game.is_none()) {
                     return Err(DatError::invalid_dat("ROM outside a game"));
@@ -365,9 +342,7 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                 if tag_name == "rom"
                     && let Some(ref mut game) = current_game
                 {
-                    let rom = parse_xml_rom_attributes(e)?;
-                    check_entry_limit(dat.games.len(), game.roms.len())?;
-                    game.roms.push(rom);
+                    game.roms.push(parse_xml_rom_attributes(e)?);
                 }
             }
             Event::Text(ref e) => {
@@ -522,7 +497,6 @@ fn parse_clrmamepro<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                 if !matches!(block_type.as_str(), "game" | "clrmamepro") {
                     return Err(DatError::Unsupported("ClrMamePro block".into()));
                 }
-                check_entry_limit(dat.games.len(), 0)?;
                 if block_type.as_str() == "game" {
                     current_game = Some(DatGame {
                         name: String::new(),
@@ -607,7 +581,6 @@ fn parse_clrmamepro<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                                 let rom = parse_clr_rom_inline(&value).ok_or_else(|| {
                                     DatError::invalid_dat("Invalid ClrMamePro ROM entry")
                                 })?;
-                                check_entry_limit(dat.games.len(), game.roms.len())?;
                                 game.roms.push(rom);
                             }
                             _ => {}

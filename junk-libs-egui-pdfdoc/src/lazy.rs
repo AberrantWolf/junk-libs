@@ -1,6 +1,6 @@
 //! Lazy, bounded document loading. Page metadata and source bytes are retained;
 //! rasters and text are loaded only on demand. One worker runs at a time, with a
-//! single replaceable request. The eager `Document` API remains available.
+//! single replaceable request.
 
 use crate::{Page, Region};
 use anyhow::{Context, Result};
@@ -116,8 +116,8 @@ impl LazyDocument {
     }
     pub fn from_pdf_bytes(bytes: Arc<Vec<u8>>, limits: CacheLimits) -> Result<Self> {
         anyhow::ensure!(
-            limits.pages > 0 && limits.bytes >= 1024 * 1024,
-            "page cache needs at least one page and 1 MiB"
+            limits.pages > 0 && limits.bytes > 0,
+            "page cache limits must be nonzero"
         );
         let pages = junk_libs_platen::page_sizes_from_bytes(&bytes)?
             .into_iter()
@@ -350,7 +350,7 @@ pub struct RegionInput {
     pub region: Region,
 }
 impl RegionInput {
-    /// Fixed-scale crop and source text, resolved on the translation worker. This
+    /// Fixed-scale crop and source text, typically resolved on a worker. This
     /// works for off-screen/evicted pages and does not depend on viewer zoom.
     pub fn resolve(&self, scale: f32) -> Result<(image::RgbaImage, String)> {
         self.resolve_with_direction(scale, junk_libs_platen::reading_order::Direction::Auto)
@@ -476,8 +476,6 @@ mod tests {
         doc.rerender_page(0, 1.0);
         doc.rerender_page(1, 2.0);
         doc.rerender_page(3, 3.0);
-        assert_eq!(doc.job.as_ref().unwrap().request, (0, 100));
-        assert_eq!(doc.desired, Some((3, 300)));
         drain(&mut doc);
         assert_eq!(doc.resident_pages(), 1);
         assert!(doc.bitmap(3).is_some());

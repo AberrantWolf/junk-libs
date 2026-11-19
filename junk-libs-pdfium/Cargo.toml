@@ -7,9 +7,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 image = "0.25"
-# Pinned to a fixed pdfium_NNNN matching the binary build.rs downloads
-# (chromium/7763). Never use pdfium_latest (moving) or pdfium_future (needs an
-# unreleased binary). Runtime binding is on by default (no `static`).
+# The pdfium_NNNN feature must match PDFIUM_VERSION in build.rs.
 pdfium-render = { version = "0.9.1", default-features = false, features = [
     "pdfium_7763",
     "image_025",

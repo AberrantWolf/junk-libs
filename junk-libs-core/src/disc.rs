@@ -1,7 +1,7 @@
 //! Disc-related filename utilities.
 //!
 //! Functions for parsing "(Disc N)" tags from game filenames and grouping
-//! multi-disc entries. Used by both the rename and scraper systems.
+//! multi-disc entries.
 
 use std::collections::HashMap;
 

@@ -11,24 +11,15 @@ use crate::sector::{MODE2_FORM1_DATA_OFFSET, RAW_SECTOR_SIZE};
 /// Cached CHD reader that decompresses each hunk at most once for as long
 /// as it lives.
 ///
-/// Holds an open `chd::Chd<F>` plus the most recently decompressed hunk
-/// (by number + bytes) and a reusable compressed-data scratch buffer. Each
-/// call to [`ChdHunkCache::read_raw_sector`] only pays the decompression
-/// cost when the requested sector lives in a different hunk from the
-/// previous call — linear readers (PCM iteration, ISO directory walk) see
-/// a roughly 10–40× speedup versus the original re-open-per-sector path.
-///
-/// This is the single implementation of "decompress a hunk and slice out
-/// one raw sector". [`read_chd_raw_sector`] is a thin one-shot wrapper;
-/// [`crate::pcm::TrackPcmReader`]'s CHD arm owns a long-lived instance.
+/// Keeps the most recently decompressed hunk, so sequential
+/// [`ChdHunkCache::read_raw_sector`] calls within one hunk decompress it
+/// only once. [`read_chd_raw_sector`] is a one-shot wrapper.
 pub struct ChdHunkCache<F: Read + Seek> {
     chd: chd::Chd<F>,
     hunk_size: u64,
     unit_bytes: u64,
     cached: Option<(u32, Vec<u8>)>,
     cmp_buf: Vec<u8>,
-    #[cfg(test)]
-    decompress_count: u32,
 }
 
 impl<F: Read + Seek> ChdHunkCache<F> {
@@ -64,8 +55,6 @@ impl<F: Read + Seek> ChdHunkCache<F> {
             unit_bytes,
             cached: None,
             cmp_buf: Vec::new(),
-            #[cfg(test)]
-            decompress_count: 0,
         })
     }
 
@@ -116,20 +105,9 @@ impl<F: Read + Seek> ChdHunkCache<F> {
                         hunk_num, e
                     ))
                 })?;
-            #[cfg(test)]
-            {
-                self.decompress_count += 1;
-            }
             self.cached = Some((hunk_num, hunk_buf));
         }
         Ok(&self.cached.as_ref().expect("cache populated above").1)
-    }
-
-    /// Number of hunks decompressed over this cache's lifetime. Test-only
-    /// instrumentation for verifying reuse.
-    #[cfg(test)]
-    pub(crate) fn decompress_count(&self) -> u32 {
-        self.decompress_count
     }
 }
 

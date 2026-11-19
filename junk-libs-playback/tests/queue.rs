@@ -3,15 +3,16 @@ use junk_libs_playback::{Generation, PlaybackCommandError, QueueState, QueueTrac
 #[test]
 fn queue_transitions_and_track_boundaries_are_deterministic() {
     let mut queue = QueueState::new();
+    let initial = queue.generation();
     let transition = queue
         .replace(vec![QueueTrack::new("a", 10), QueueTrack::new("b", 20)], 0)
         .unwrap();
-    assert_eq!(transition.generation, Generation(1));
+    assert_ne!(transition.generation, initial);
     assert_eq!(transition.position.unwrap().track_key, "a");
 
-    queue.seek(Generation(1), 9).unwrap();
+    queue.seek(transition.generation, 9).unwrap();
     assert!(matches!(
-        queue.seek(Generation(1), 4),
+        queue.seek(transition.generation, 4),
         Err(PlaybackCommandError::StaleGeneration { .. })
     ));
     let next = queue.next_track().unwrap();

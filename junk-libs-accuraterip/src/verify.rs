@@ -2,8 +2,7 @@
 //!
 //! The verification loop is deliberately stateless: given a dBAR and one
 //! or more computed CRCs, it reports every matching pressing for v1 and
-//! v2 independently. Callers (CLI `verify`, library cache writer) decide
-//! how to present the outcome.
+//! v2 independently. Callers decide how to present the outcome.
 
 use crate::crc::TrackCrc;
 use crate::dbar::DbarFile;
@@ -67,9 +66,7 @@ impl TrackVerification {
             .max_by_key(|matched| matched.confidence)
     }
 
-    /// Short human-readable summary suitable for presentation. The format is
-    /// stable and grep-friendly; durable state is the structured verification
-    /// run rather than this derived string.
+    /// Short human-readable summary suitable for presentation.
     ///
     /// - `"v2 confidence 8"` — v2 matched, best confidence 8
     /// - `"v1 confidence 3 (v2 no match)"` — only v1 matched

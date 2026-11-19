@@ -1,4 +1,4 @@
-//! Bounded file-audio inspection. Consumers own package identity and publication.
+//! Bounded file-audio inspection.
 use crate::{AudioDecodeError, AudioDecoder, ByteSource};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -14,7 +14,7 @@ pub struct FileAudioInfo {
     pub delay_frames: Option<u32>,
     pub padding_frames: Option<u32>,
     pub tags: BTreeMap<String, Vec<String>>,
-    // Encoded artwork is consumed by a caller-owned Asset pipeline, not a PCM API.
+    /// `(media type, encoded bytes)`; not serialized.
     #[serde(skip)]
     pub pictures: Vec<(String, Vec<u8>)>,
 }
@@ -42,13 +42,8 @@ impl FileAudioInfo {
                 _ => continue,
             };
             let value = tag.value.to_string();
-            if value.len() > 4096
-                || value.contains('\u{fffd}')
-                || value.chars().any(char::is_control)
-            {
-                return Err(AudioDecodeError::Decoder(
-                    "invalid or oversized audio tag".into(),
-                ));
+            if value.len() > 4096 {
+                return Err(AudioDecodeError::Decoder("oversized audio tag".into()));
             }
             let values = self.tags.entry(key.into()).or_default();
             if !values.contains(&value) {
@@ -209,9 +204,6 @@ pub fn inspect_file_audio(
         return Err(AudioDecodeError::UnsupportedSource(
             decoder.inspection.codec,
         ));
-    }
-    if !matches!(decoder.format().channels(), 1 | 2) {
-        return Err(AudioDecodeError::TooManyChannels);
     }
     let mut frames = 0u64;
     while let Some(chunk) = {
@@ -503,7 +495,7 @@ pub(crate) fn validate_metadata_prefix(
             3 => 0xe0,
             _ => 0xf0,
         };
-        if signature[4] != 0 || signature[5] & !allowed_flags != 0 {
+        if signature[5] & !allowed_flags != 0 {
             return Err(invalid());
         }
         let size = signature[6..10]

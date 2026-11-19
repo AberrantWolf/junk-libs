@@ -10,9 +10,7 @@ const CD_SAMPLE_RATE: u32 = 44_100;
 const CD_CHANNELS: u16 = 2;
 const MAX_DISC_READ_FRAMES: usize = 588;
 
-/// Playback adapter for an already-authorized CUE audio reader.
-///
-/// Opening CUE paths and choosing a track remain product-adapter policy.
+/// PCM adapter over a CUE audio track reader.
 pub struct CuePcmDecoder {
     reader: CueAudioReader,
 }
@@ -56,8 +54,8 @@ impl CuePcmDecoder {
     }
 }
 
-/// Playback adapter for an already-authorized redumper raw-audio reader.
-/// Returned quality observations remain available to the consumer.
+/// PCM adapter over a redumper raw-audio reader; each chunk carries its
+/// sample-quality observations.
 pub struct RedumperPcmDecoder {
     reader: RawAudioReader,
 }

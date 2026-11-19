@@ -14,8 +14,7 @@ const MAX_FLUSH_BLOCKS: usize = 128;
 /// A bounded streaming sinc resampler with exact final output length.
 ///
 /// Input chunks must be contiguous in source-frame coordinates. Output chunks
-/// use a zero-based output-frame coordinate; queue/seek policy remains in the
-/// playback service and never derives a source seek from resampled floats.
+/// use a zero-based output-frame coordinate.
 pub struct SincResampler {
     inner: SincFixedIn<f32>,
     input_format: PcmFormat,

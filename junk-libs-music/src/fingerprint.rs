@@ -3,7 +3,9 @@ use crate::{Error, Result};
 use junk_libs_audio::AudioDecoder;
 pub use junk_libs_audio::{ByteSource, MediaHint};
 use serde::{Deserialize, Serialize};
-pub const IMPLEMENTATION: &str = "chromaprint-next/7a384eee09caf17b4f6241f481dd784c2e937d9a";
+/// Provenance recorded in new fingerprints. Informational only: compatibility is
+/// defined by the Chromaprint algorithm, which [`AudioFingerprint::validate`] checks.
+pub const IMPLEMENTATION: &str = "chromaprint-next";
 pub const MAX_FINGERPRINT_SECONDS: u64 = 120;
 const MAX_SECONDS: u64 = 24 * 60 * 60;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -34,7 +36,6 @@ impl AudioFingerprint {
 
     pub fn validate(&self) -> Result<()> {
         if self.algorithm != 1
-            || self.implementation != IMPLEMENTATION
             || !(8000..=192000).contains(&self.sample_rate)
             || !matches!(self.channels, 1 | 2)
             || self.decoded_frames == 0

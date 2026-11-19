@@ -127,9 +127,9 @@ fn empty_summary(status: VerificationStatus, bounds: SearchBounds) -> Verificati
     }
 }
 
-/// Verify exact integer PCM without retaining whole tracks or prefix arrays.
-/// The largest allocation is a 64-KiB read buffer; the published 64-MiB budget
-/// leaves room for adapter buffering and result bookkeeping.
+/// Verify exact integer PCM without retaining whole tracks. Working memory
+/// stays within [`ACCURATERIP_WORKING_BUFFER_BYTES`]. `checkpoint` is called
+/// between reads; returning an error cancels verification.
 pub fn verify_with_offset_reader<R, C>(
     dbar: &DbarFile,
     disc: &mut BoundedDiscReader<R>,

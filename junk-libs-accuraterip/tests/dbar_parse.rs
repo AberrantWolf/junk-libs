@@ -1,10 +1,6 @@
 //! dBAR binary parser tests.
 //!
-//! Uses hand-built byte blobs so the structure is auditable without
-//! tools. The fixture layout mirrors ARver's
-//! [`arver/disc/database.py`](https://github.com/arcctgx/ARver/blob/master/arver/disc/database.py)
-//! parser and the format description in
-//! Phono Junk's source-cited `docs/knowledge/disc-formats/accuraterip.md`.
+//! Uses hand-built byte blobs so the structure is auditable.
 
 use junk_libs_accuraterip::{AccurateRipError, DbarFile, DbarResponse, ExpectedChecksum};
 
@@ -108,12 +104,10 @@ fn empty_buffer_parses_to_zero_responses() {
 #[test]
 fn truncated_header_errors() {
     let bytes = [0x03, 0x64, 0x42];
-    match DbarFile::parse(&bytes) {
-        Err(AccurateRipError::Parse(msg)) => {
-            assert!(msg.contains("truncated header"), "msg was: {msg}");
-        }
-        other => panic!("expected Parse error, got {other:?}"),
-    }
+    assert!(matches!(
+        DbarFile::parse(&bytes),
+        Err(AccurateRipError::Parse(_))
+    ));
 }
 
 #[test]
@@ -130,12 +124,10 @@ fn truncated_entries_errors() {
         ],
     );
     bytes.truncate(bytes.len() - 3);
-    match DbarFile::parse(&bytes) {
-        Err(AccurateRipError::Parse(msg)) => {
-            assert!(msg.contains("truncated entries"), "msg was: {msg}");
-        }
-        other => panic!("expected Parse error, got {other:?}"),
-    }
+    assert!(matches!(
+        DbarFile::parse(&bytes),
+        Err(AccurateRipError::Parse(_))
+    ));
 }
 
 #[test]
@@ -169,10 +161,8 @@ fn request_validation_rejects_wrong_header_or_track_count() {
     let bytes = build_response(2, 1, 2, 3, &[(5, 0xaa, 0xbb), (5, 0xcc, 0xdd)]);
     let parsed = DbarFile::parse(&bytes).unwrap();
     parsed.validate_request(2, 1, 2, 3).unwrap();
-    let error = parsed.validate_request(3, 1, 2, 3).unwrap_err();
-    assert!(error.to_string().contains("does not match request"));
-    let error = parsed.validate_request(2, 9, 2, 3).unwrap_err();
-    assert!(error.to_string().contains("does not match request"));
+    assert!(parsed.validate_request(3, 1, 2, 3).is_err());
+    assert!(parsed.validate_request(2, 9, 2, 3).is_err());
 }
 
 #[test]

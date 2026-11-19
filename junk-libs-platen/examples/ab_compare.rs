@@ -1,5 +1,4 @@
-//! Corpus-scale A/B comparison between the hayro and pdfium backends — the
-//! migration gate from SPEC.md §5. Renders every page of every PDF given on
+//! Corpus-scale A/B comparison between the hayro and pdfium backends. Renders every page of every PDF given on
 //! the command line through both engines and reports pixel and text-layer
 //! divergence.
 //!

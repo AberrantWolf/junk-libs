@@ -12,8 +12,8 @@
 //! - [`parse_log`] — parses a redumper log into [`RedumperLog`].
 //! - [`parse_cdtext`] — parses a binary CD-TEXT dump into [`CdText`].
 //!
-//! `pcm` additionally provides bounded, seekable raw audio playback. No domain
-//! types from phono-junk or retro-junk leak in. See PLAYBACK.md for its contract.
+//! [`pcm`] additionally provides bounded, seekable raw audio playback from
+//! `.scram`/`.state` packages. See PLAYBACK.md for its contract.
 //!
 //! Upstream reference: redumper project, <https://github.com/superg/redumper>.
 //! CD-TEXT format: IEC 60908 (Red Book) annex and Sony/Philips CD-TEXT spec.

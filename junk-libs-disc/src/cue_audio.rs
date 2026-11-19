@@ -1,5 +1,7 @@
-//! Playback-oriented CUE layout. Stored INDEX 00 gaps and synthetic PREGAP/POSTGAP
-//! remain separate extents. Existing sector-layout/hash APIs are unchanged.
+//! Playback-oriented CUE layout for standard BINARY CUE sheets.
+//!
+//! Positions are stereo frames on a playback timeline. Stored INDEX 00 gaps and
+//! synthetic PREGAP/POSTGAP silence are separate extents. See PLAYBACK.md.
 use crate::{
     cue,
     layout::{TrackKind, classify_mode},
@@ -55,32 +57,26 @@ fn timestamp(s: &str) -> Result<u64, AnalysisError> {
         .map(str::parse::<u64>)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| invalid("invalid gap timestamp"))?;
-    if p.len() != 3 || p[1] >= 60 || p[2] >= 75 || p[0] > 999 {
+    if p.len() != 3 || p[1] >= 60 || p[2] >= 75 {
         return Err(invalid("invalid gap timestamp"));
     }
-    Ok(((p[0] * 60 + p[1]) * 75 + p[2]) * 588)
+    p[0].checked_mul(60 * 75)
+        .and_then(|f| f.checked_add(p[1] * 75 + p[2]))
+        .and_then(|f| f.checked_mul(588))
+        .ok_or_else(|| invalid("invalid gap timestamp"))
 }
 impl CueAudioDisc {
     pub fn open(path: &Path) -> Result<Self, AnalysisError> {
         let text = std::fs::read_to_string(path)?;
         let dir = path.parent().unwrap_or(Path::new("."));
-        // Do not silently discard nonstandard directives which affect audio placement.
-        // Existing legacy sector reader remains available to non-playback consumers.
+        // Nonstandard (CDRWin) directives can affect audio placement; reject rather
+        // than silently converting them away.
         if !cue::check_cue_compat(&text).is_standard() {
             return Err(AnalysisError::unsupported(
                 "playback layout requires a standard BIN/CUE sheet",
             ));
         }
         let sheet = cue::parse_cue(&text)?;
-        if sheet
-            .files
-            .iter()
-            .flat_map(|f| &f.tracks)
-            .flat_map(|t| &t.indexes)
-            .any(|i| i.minutes > 999 || i.seconds >= 60 || i.frames >= 75)
-        {
-            return Err(invalid("CUE index timestamp out of range"));
-        }
 
         let resolved = cue::compute_cue_resolved_layout(&sheet, |name| {
             Ok(std::fs::metadata(cue::resolve_local_file(dir, name)?)?.len())

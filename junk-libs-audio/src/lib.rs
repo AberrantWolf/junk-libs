@@ -1,7 +1,5 @@
-//! Headless byte-source and PCM coordinate contracts.
-//!
-//! AccurateRip and other preservation calculations intentionally do not use
-//! this floating-point playback boundary; they remain on integer CD PCM.
+//! Headless audio decoding over caller-supplied byte sources, with PCM
+//! positions in frames and interleaved `f32` samples.
 
 use std::{
     io::{Read, Seek},

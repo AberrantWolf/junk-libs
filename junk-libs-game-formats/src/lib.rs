@@ -187,9 +187,8 @@ fn nes2_rom_bytes(lsb: u8, msb: u8, unit: u64, label: &str) -> Result<u64, Analy
 
 /// Validate the exact trainer-free iNES/NES 2.0 payload span.
 ///
-/// Trainer-bearing images are preserved but deliberately unsupported for catalog
-/// normalization: silently dropping or including the trainer would claim a byte
-/// domain that this checkpoint has not qualified. NES 2.0 miscellaneous ROMs are
+/// Trainer-bearing images are reported as unsupported, since whether the
+/// trainer belongs to the payload is ambiguous. NES 2.0 miscellaneous ROMs are
 /// also unsupported because their lengths are not encoded by the header.
 pub fn inspect_ines<R: ReadSeek + ?Sized>(reader: &mut R) -> Result<InesLayout, AnalysisError> {
     let file_bytes = reader_len(reader)?;
@@ -203,7 +202,7 @@ pub fn inspect_ines<R: ReadSeek + ?Sized>(reader: &mut R) -> Result<InesLayout, 
     }
     if header[6] & 0x04 != 0 {
         return Err(AnalysisError::unsupported(
-            "trainer-bearing iNES normalization is unqualified",
+            "trainer-bearing iNES images are unsupported",
         ));
     }
 
@@ -211,7 +210,7 @@ pub fn inspect_ines<R: ReadSeek + ?Sized>(reader: &mut R) -> Result<InesLayout, 
     let (version, mapper, submapper, prg_rom_bytes, chr_rom_bytes) = if nes2 {
         if header[14] & 0x03 != 0 {
             return Err(AnalysisError::unsupported(
-                "NES 2.0 miscellaneous ROM normalization is unqualified",
+                "NES 2.0 miscellaneous ROMs are unsupported",
             ));
         }
         let mapper = u16::from(header[6] >> 4)
@@ -391,7 +390,7 @@ fn explicit_banked_layout(
     })?;
     if payload < minimum_bytes || !payload.is_multiple_of(bank_bytes) {
         return Err(AnalysisError::invalid_format(format!(
-            "{label} payload is not an explicitly qualified {bank_bytes}-byte bank layout"
+            "{label} payload is not a whole number of {bank_bytes}-byte banks"
         )));
     }
     Ok((offset, payload))
@@ -515,7 +514,7 @@ pub fn hash_cue_raw_2352_with_progress<R: ReadSeek>(
     for file in &sheet.files {
         if !file.file_type.eq_ignore_ascii_case("BINARY") {
             return Err(AnalysisError::unsupported(
-                "qualified CUE hashes require BINARY sources",
+                "CUE hashing requires BINARY sources",
             ));
         }
         let logical_name = file
@@ -592,7 +591,7 @@ pub fn hash_cue_raw_2352_with_progress<R: ReadSeek>(
         let frame_bytes = junk_libs_disc::checked_sector_size_for_mode(&span.mode)?;
         if frame_bytes != junk_libs_disc::RAW_SECTOR_SIZE {
             return Err(AnalysisError::unsupported(format!(
-                "CUE TRACK {:02} uses {frame_bytes}-byte stored frames; only raw 2352 is qualified",
+                "CUE TRACK {:02} uses {frame_bytes}-byte stored frames; only raw 2352 is supported",
                 span.track_number
             )));
         }
@@ -601,7 +600,7 @@ pub fn hash_cue_raw_2352_with_progress<R: ReadSeek>(
         let declared = source_len(&span.filename)?;
         if actual != declared {
             return Err(AnalysisError::invalid_format(format!(
-                "CUE source {} is {actual} bytes; frozen inventory declares {declared}",
+                "CUE source {} is {actual} bytes; source_len reported {declared}",
                 span.filename
             )));
         }
@@ -644,8 +643,7 @@ pub struct ChdTrackHashes {
 }
 
 /// Hash every true ordered CHD CD track as raw 2352-byte main-channel frames.
-/// CHD four-frame alignment padding and subchannel bytes are excluded by the
-/// version-pinned `junk-libs-disc` reader.
+/// CHD four-frame alignment padding and subchannel bytes are excluded.
 #[cfg(feature = "chd")]
 pub fn hash_chd_raw_2352<R: ReadSeek>(
     reader: &mut R,

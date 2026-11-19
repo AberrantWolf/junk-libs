@@ -81,7 +81,7 @@ impl Presentation {
 }
 
 /// Seekable media decoder with track-local PCM frame coordinates.
-/// Codec support is selected by Cargo features; preservation uses integer readers.
+/// Codec support is selected by Cargo features.
 pub struct AudioDecoder {
     format_reader: Box<dyn FormatReader>,
     decoder: Box<dyn Decoder>,

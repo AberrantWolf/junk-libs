@@ -11,7 +11,7 @@
 //! the displayed image rect each frame, so it's correct at any zoom. The widget
 //! owns only its texture, zoom/scroll, and in-progress drag.
 //!
-//! A batteries-included [`PageModel`] backed by PDFium lives in the sibling
+//! A batteries-included [`PageModel`] backed by `junk-libs-platen` lives in the sibling
 //! `junk-libs-egui-pdfdoc` crate, so consumers needn't write PDF glue themselves.
 
 use egui::{Color32, Pos2, Rect as ERect, Sense, Stroke, Vec2};

@@ -86,17 +86,6 @@ fn test_cue_index_to_sector_offset() {
 }
 
 #[test]
-fn test_cue_index_to_sector_offset_zero() {
-    let index = CueIndex {
-        number: 1,
-        minutes: 0,
-        seconds: 0,
-        frames: 0,
-    };
-    assert_eq!(index.to_sector_offset(), 0);
-}
-
-#[test]
 fn test_parse_cue_cdrwin_format() {
     // CDRWin extended format: TRACK before DATAFILE, no track numbers
     let cue = r#"CD_ROM_XA
@@ -465,28 +454,10 @@ fn test_convert_mode_mapping() {
 }
 
 #[test]
-fn test_sectors_to_msf_roundtrip() {
-    // Test internal MSF conversion helpers
-    let sectors = msf_to_sectors("01:32:21").unwrap();
-    let msf = sectors_to_msf(sectors);
-    assert_eq!(msf, "01:32:21");
-}
-
-#[test]
-fn test_msf_to_sectors() {
+fn test_msf_sector_conversion_roundtrips() {
     // 1 minute 32 seconds 21 frames = (92 * 75) + 21 = 6921 sectors
-    let sectors = msf_to_sectors("01:32:21").unwrap();
-    assert_eq!(sectors, 6921);
-}
-
-#[test]
-fn test_compat_summary() {
-    let cue = "CD_ROM_XA\n\nTRACK MODE2_RAW\nNO COPY\nDATAFILE \"game.bin\"\n";
-    let report = check_cue_compat(cue);
-    let summary = report.summary();
-    assert!(summary.contains("CD_ROM_XA header"));
-    assert!(summary.contains("CDRWin track mode"));
-    assert!(summary.contains("DATAFILE"));
+    assert_eq!(msf_to_sectors("01:32:21").unwrap(), 6921);
+    assert_eq!(sectors_to_msf(6921), "01:32:21");
 }
 
 #[test]

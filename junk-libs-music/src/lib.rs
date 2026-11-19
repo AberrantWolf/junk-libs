@@ -1,4 +1,4 @@
-//! Reusable mechanisms. No HTTP clients, application jobs, paths or metadata authority.
+//! Audio fingerprints, music provider decoding and release matching. No network I/O.
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "fingerprint")]
 pub mod fingerprint;

@@ -151,8 +151,7 @@ FILE "t3.bin" BINARY
 // BIN (INDEX 01 > 00:00:00). The pregap sectors belong on the end of the
 // previous track's length and must NOT be dropped.
 //
-// Fixture: real 8cm sample disc "1slWHocW5_...". Expected MusicBrainz input
-// derived from the bundled `mbdiscid_full.log`:
+// Expected MusicBrainz DiscID input (from a real 3-track disc):
 //     1 3 61197 187 20335 39190
 // BIN sizes: 19946 / 19094 / 22007 sectors.
 // INDEX 01 positions within their BINs: 37, 239, 0.

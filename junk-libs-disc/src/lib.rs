@@ -6,11 +6,9 @@
 //! - CUE sheet parsing (standard + CDRWin compatibility)
 //! - CHD compressed disc reading
 //! - CD sector constants and helpers
-//!
-//! Redump-specific track-aware hashing lives in `retro-junk` and is not
-//! extracted here. For per-track audio PCM iteration (phono-junk's
-//! AccurateRip CRC path, future FLAC export, retro-junk's CDDA tracks),
-//! see the [`pcm`] module.
+//! - Redumper sidecar parsing ([`redumper`])
+//! - Per-track CD-DA PCM reading ([`pcm`], [`cue_audio`], [`redumper::pcm`];
+//!   see PLAYBACK.md)
 
 pub mod chd;
 pub mod cue;

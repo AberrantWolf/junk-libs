@@ -28,15 +28,16 @@ pub struct RawAudioTrack {
 }
 
 /// Parse the current redumper `.toc` (MMC format 0, LBA addressing).
-/// Mixed-mode and multisession images are deliberately unsupported by this first reader:
-/// a format-0 TOC alone cannot safely determine their audio/data pregap boundaries.
+///
+/// Data or four-channel tracks are rejected as unsupported: a format-0 TOC alone
+/// cannot determine audio/data pregap boundaries.
 pub fn parse_audio_toc(bytes: &[u8]) -> Result<Vec<RawAudioTrack>, AnalysisError> {
     let bad = || AnalysisError::invalid_format("invalid redumper audio TOC");
     if bytes.len() < 20
         || usize::from(u16::from_be_bytes([bytes[0], bytes[1]])) + 2 != bytes.len()
         || !(bytes.len() - 4).is_multiple_of(8)
-        || bytes[2] != 1
-        || !(1..=99).contains(&bytes[3])
+        || !(1..=99).contains(&bytes[2])
+        || !(bytes[2]..=99).contains(&bytes[3])
     {
         return Err(bad());
     }
@@ -53,13 +54,14 @@ pub fn parse_audio_toc(bytes: &[u8]) -> Result<Vec<RawAudioTrack>, AnalysisError
         }
         points.push((d[2], d[1] & 15, lba));
     }
-    if points.len() != usize::from(bytes[3]) + 1 || points.last().unwrap().0 != 0xaa {
+    let first = bytes[2];
+    if points.len() != usize::from(bytes[3] - first) + 2 || points.last().unwrap().0 != 0xaa {
         return Err(bad());
     }
     let mut tracks = Vec::new();
     for (i, pair) in points.windows(2).enumerate() {
         let (number, control, lba) = pair[0];
-        if number as usize != i + 1 {
+        if usize::from(number) != usize::from(first) + i {
             return Err(bad());
         }
         if control & 12 != 0 {

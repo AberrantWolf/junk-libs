@@ -43,14 +43,6 @@ fn extract_disc_number_not_found() {
 }
 
 #[test]
-fn extract_disc_number_from_stem() {
-    assert_eq!(
-        extract_disc_number("Metal Gear Solid (Disc 1) (USA)"),
-        Some(1)
-    );
-}
-
-#[test]
 fn detect_disc_groups_basic() {
     let entries = vec![
         (0, "Final Fantasy VII (USA) (Disc 1)"),

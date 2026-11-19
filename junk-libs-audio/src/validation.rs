@@ -1,4 +1,6 @@
-//! Bounded integer FLAC comparison and strict generated Ogg Opus inspection.
+//! Checks that generated CD-DA derivatives match their source: FLAC by
+//! integer PCM comparison, Ogg Opus by structure and duration against the
+//! fixed encoding profile (stereo, 48 kHz, 20 ms packets, unity gain).
 use std::io::{Error, ErrorKind, Read, Result};
 
 use crate::ogg::{OpusHead, PAGE_HEADER_LEN, PageHeader, page_crc};
@@ -254,7 +256,7 @@ mod tests {
     use super::*;
     const OPUS: &[u8] = include_bytes!("../tests/fixtures/silence-588.opus");
     #[test]
-    fn independent_encoder_preskip_is_not_counted_twice() {
+    fn opus_preskip_is_not_counted_twice() {
         let result = inspect_opus(&mut &OPUS[..], 588, &mut || Ok(())).unwrap();
         assert_eq!(
             (result.decoded_frames, result.pre_skip, result.end_padding),

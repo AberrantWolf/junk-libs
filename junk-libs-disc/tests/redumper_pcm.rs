@@ -128,6 +128,14 @@ fn toc_uses_binary_lba_and_rejects_ambiguous_or_malformed_layouts() {
     let mut bytes = toc();
     bytes[5] = 0x11;
     assert!(parse_audio_toc(&bytes).unwrap()[0].pre_emphasis);
+
+    // A disc whose first track is not 1 is still a valid sequential TOC.
+    let mut bytes = toc();
+    bytes[2..4].copy_from_slice(&[3, 4]);
+    bytes[6] = 3;
+    bytes[14] = 4;
+    let tracks = parse_audio_toc(&bytes).unwrap();
+    assert_eq!(tracks.iter().map(|t| t.number).collect::<Vec<_>>(), [3, 4]);
 }
 
 #[test]
@@ -153,7 +161,7 @@ fn missing_frames_and_truncated_sources_fail_instead_of_padding() {
 }
 
 #[test]
-#[ignore = "set JUNK_LIBS_REDUMPER_AUDIO_PREFIX to the known-good Octopath b736 package"]
+#[ignore = "set JUNK_LIBS_REDUMPER_AUDIO_PREFIX to the b736 audio-CD package"]
 fn real_audio_raw_matches_split_bin_on_the_recording_timeline() {
     use junk_libs_disc::{
         pcm::TrackPcmReader,

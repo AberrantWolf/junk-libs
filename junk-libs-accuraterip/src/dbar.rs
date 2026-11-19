@@ -19,8 +19,7 @@
 //! }
 //! ```
 //!
-//! Format documented in Phono Junk's source-cited AccurateRip notes
-//! and mirrors ARver's
+//! Mirrors ARver's
 //! [`arver/disc/database.py`](https://github.com/arcctgx/ARver/blob/master/arver/disc/database.py)
 //! response parser.
 
@@ -34,8 +33,7 @@ pub const ENTRY_LEN: usize = 1 + 4 + 4;
 /// One dBAR track entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExpectedChecksum {
-    /// Number of submitters whose rips produced this checksum. Saturates
-    /// around 200+; interpret per the AccurateRip.md rubric.
+    /// Number of submitters whose rips produced this checksum.
     pub confidence: u8,
     /// The full-track checksum. The database does not say whether the
     /// submitting client calculated ARv1 or ARv2.

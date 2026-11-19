@@ -1,7 +1,5 @@
-//! The legacy engine, delegating to `junk-libs-pdfium` (which manages the
-//! PDFium binary, the once-per-process bind, and the global render lock
-//! internally). Kept for A/B comparison during the hayro migration and as a
-//! dev-time test oracle; not intended to ship once the cutover sticks.
+//! The PDFium engine, delegating to `junk-libs-pdfium` (which manages the
+//! PDFium binary, the once-per-process bind, and the global render lock).
 
 use std::path::Path;
 

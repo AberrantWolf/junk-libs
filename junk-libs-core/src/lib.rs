@@ -1,4 +1,4 @@
-//! Generic infrastructure shared by retro-junk and phono-junk.
+//! Generic, domain-agnostic infrastructure shared by the junk-libs crates.
 //!
 //! - Streaming multi-algorithm hashing ([`MultiHasher`])
 //! - ASCII/byte utilities ([`util`])
@@ -6,10 +6,6 @@
 //! - Checksum descriptors ([`checksum`])
 //! - [`ReadSeek`] trait alias
 //! - [`AnalysisError`] for I/O + format errors
-//!
-//! This crate holds only the genuinely domain-agnostic bits. Retro-game and
-//! audio-specific concepts live in `retro-junk-core` and `phono-junk-core`
-//! respectively.
 
 use serde::{Deserialize, Serialize};
 

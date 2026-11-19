@@ -1,6 +1,4 @@
-//! End-to-end tests for the hayro backend, using a minimal PDF built in-test
-//! (no engine needed to *create* fixtures, unlike junk-libs-pdfium's tests,
-//! which used pdfium's creation API).
+//! End-to-end tests for the hayro backend, using a minimal PDF built in-test.
 
 #![cfg(feature = "backend-hayro")]
 
@@ -63,9 +61,7 @@ fn extreme_zoom_is_capped_not_oom() {
     assert!(image.height() <= junk_libs_platen::MAX_RENDER_DIMENSION);
 }
 
-/// The whole point of leaving pdfium: concurrent renders of the same document
-/// from multiple threads, no global lock. This deadlocks/segfaults on the old
-/// engine's API shape; here it must just work.
+/// Concurrent renders of the same document from multiple threads.
 #[test]
 fn renders_in_parallel() {
     let bytes = std::sync::Arc::new(minimal_pdf());
@@ -96,9 +92,8 @@ fn file_roundtrip_and_page_count() {
     assert_eq!(pages.len(), 1);
 }
 
-/// Text-layer extraction: same expectations junk-libs-pdfium's test had for
-/// its pdfium-generated fixture — "Hello" at baseline (72, 720) in 24pt
-/// Helvetica, boxes in top-left page points.
+/// Text-layer extraction: "Hello" at baseline (72, 720) in 24pt Helvetica,
+/// boxes in top-left page points.
 #[test]
 fn extracts_text_layer() {
     let bytes = minimal_pdf();
@@ -112,7 +107,7 @@ fn extracts_text_layer() {
     assert!(text.contains("Hello"), "extracted text layer was {text:?}");
 
     // 'H' sits at x≈72pt and, flipped into top-left space, y ≈ 842 − 720 ≈
-    // 122pt down minus the ascent — same windows the pdfium test used.
+    // 122pt down minus the ascent.
     let h = boxes.iter().find(|b| b.ch == 'H').expect("found 'H' box");
     assert!((55.0..95.0).contains(&h.x), "H.x = {}", h.x);
     assert!((90.0..150.0).contains(&h.y), "H.y = {}", h.y);

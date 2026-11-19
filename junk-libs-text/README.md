@@ -1,24 +1,28 @@
-# Shared Unicode text rendering
+# junk-libs-text
 
-`TextRenderer` uses COSMIC Text 0.19 for shaping, bidi layout, Unicode line
-breaking, font fallback and Swash rasterization. It has no egui or PDF dependency.
-Retain a renderer per worker or rendering context to reuse font and glyph caches.
+GUI-independent Unicode text rendering into `image::RgbaImage`: shaping, bidi,
+line breaking, font fallback and rasterization via COSMIC Text.
 
-The bundled SIL OFL Noto fonts cover Latin, Cyrillic, Vietnamese, Arabic, Hebrew,
-Devanagari and Thai. `with_fonts` adds host-provided CJK or other fonts to an
-explicit database; it does not scan installed fonts. The matching notices are in
-`fonts/*-OFL.txt` and must accompany distributed binaries embedding the fonts.
+## Usage
 
-`TextStyle` specifies alignment, weight, optional maximum em size and padding in
-raster pixels. To use page points, multiply size and padding by pixels-per-point.
-Auto-fit shapes the full text and checks every line before bounded binary search;
-`LayoutReport` exposes the chosen size, missing glyphs and overflow. Rotation and
-background sampling remain host responsibilities. Cache eviction drops glyph
-bitmaps after 4096 cached glyph images; caller-owned page/patch caches should also
-be bounded.
+`TextRenderer::render` lays out text in a pixel box and returns the raster plus
+a `LayoutReport` (chosen size, line/glyph counts, missing glyphs, overflow).
+`TextStyle` sets alignment, weight, padding and an optional maximum em size in
+raster pixels; without a size the text is auto-fit so every line fits. To work
+in page points, multiply size and padding by pixels-per-point.
 
-Generate a visual sample with optional additional font files:
+Keep one renderer per worker or rendering context so font and glyph caches are
+reused. Rotation and background sampling are left to the caller.
+
+## Fonts
+
+Bundled Noto fonts (`BUNDLED_FONTS`) cover Latin, Cyrillic, Vietnamese, Arabic,
+Hebrew, Devanagari and Thai. `TextRenderer::with_fonts` adds caller-supplied
+fonts (e.g. CJK); installed system fonts are never scanned. The fonts are SIL
+OFL licensed; ship `fonts/*-OFL.txt` with binaries that embed them.
+
+## Example
 
 ```sh
-cargo run -p junk-libs-text --example showcase -- sample.png Japanese.ttf Korean.ttf
+cargo run -p junk-libs-text --example showcase -- sample.png [extra-font.ttf ...]
 ```

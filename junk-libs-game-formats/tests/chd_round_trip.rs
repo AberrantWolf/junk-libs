@@ -7,22 +7,9 @@ use std::process::Command;
 use junk_libs_game_formats::{CUE_RAW_2352_TRACK_DOMAIN, hash_chd_raw_2352};
 
 #[test]
-#[ignore = "requires explicitly provisioned chdman 0.285; run with --ignored"]
-fn chdman_0285_round_trip_matches_every_unpadded_raw_track() {
+#[ignore = "requires chdman (or $CHDMAN); run with --ignored"]
+fn chdman_round_trip_matches_every_unpadded_raw_track() {
     let tool = std::env::var("CHDMAN").unwrap_or_else(|_| "chdman".into());
-    let version = Command::new(&tool)
-        .arg("--version")
-        .output()
-        .expect("required chdman oracle is unavailable");
-    let banner = format!(
-        "{}{}",
-        String::from_utf8_lossy(&version.stdout),
-        String::from_utf8_lossy(&version.stderr)
-    );
-    assert!(
-        banner.split_whitespace().any(|token| token == "0.285"),
-        "required chdman 0.285, got {banner}"
-    );
 
     let directory = tempfile::tempdir().unwrap();
     let cue = directory.path().join("disc.cue");

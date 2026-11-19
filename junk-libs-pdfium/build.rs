@@ -1,15 +1,9 @@
-//! Build script: vendor the PDFium shared library so consumers of this crate
-//! can render PDFs without any manual setup.
+//! Downloads the prebuilt PDFium shared library (bblanchon/pdfium-binaries)
+//! into `OUT_DIR` and exports its directory as `PDFIUM_LIB_DIR`, which
+//! `instance()` uses to bind PDFium at runtime.
 //!
-//! We download the prebuilt PDFium from bblanchon/pdfium-binaries at a *fixed*
-//! tag that matches the `pdfium_NNNN` feature in Cargo.toml. Mismatch between the
-//! feature and the binary is the classic `LoadLibraryError: undefined symbol
-//! FPDFText_*` failure — keep `PDFIUM_VERSION` and that feature in lockstep.
-//!
-//! The library is placed under `OUT_DIR` and its directory is exported as the
-//! `PDFIUM_LIB_DIR` env var, which this crate's `instance()` reads via
-//! `option_env!` to bind PDFium dynamically at runtime. No link directives are
-//! emitted (we don't static-link).
+//! The release must match the `pdfium_NNNN` feature of `pdfium-render` in
+//! Cargo.toml; a mismatch fails at bind time with undefined symbols.
 
 use std::path::{Path, PathBuf};
 use std::{env, fs};

@@ -1,48 +1,38 @@
 # junk-libs-music
 
-Shared mechanisms for Collector and Trash Amp. No HTTP client, paths, database,
-UI or automatic metadata acceptance is included.
+Audio fingerprinting, MusicBrainz/AcoustID response decoding and release
+matching. The crate performs no network I/O, owns no paths or database, and
+never writes metadata.
 
-Enable `fingerprint` for bounded, cancellable mono/stereo FLAC/MP3 decoding and
-Chromaprint Test2 fingerprints over the first 120 seconds. Duration and decoded
-coordinates cover the complete file (maximum 24 hours). Consumers supply a
-bounded cancellable `ByteSource`; short audio can produce no searchable fingerprint.
-The exact corrected chromaprint-next revision is pinned because published 0.1.0
-mishandles stereo frames split across feed calls. Chromaprint compatibility does
-not establish recording or release identity.
+## Features
 
-Enable `musicbrainz` for MusicBrainz URL construction and decoding through
-musicbrainz_rs 0.14 entity models, plus bounded AcoustID response interpretation.
-Transport, contact headers, rate limits, credentials, caching and durable work
-remain consumer responsibilities. URL query pairs avoid the community API
-builder's ampersand escaping defect.
+- `fingerprint` — bounded, cancellable Chromaprint (Test2) fingerprints of
+  mono/stereo FLAC and MP3 from a caller-supplied `ByteSource`. The first 120
+  seconds are analyzed; the reported duration covers the whole file (up to 24
+  hours). `compute_window` decodes only the analyzed window when the total
+  length is already known. Very short audio may yield no searchable fingerprint
+  (`AudioFingerprint::usable`).
+- `musicbrainz` — MusicBrainz URL construction and release decoding through
+  `musicbrainz_rs` entity models, plus AcoustID response interpretation.
+  Transport, rate limiting, credentials and caching are the caller's job.
 
-`matching::rank` requires recording evidence for each edge, finds a maximum
-one-to-one assignment and reports missing coverage, ambiguity and duration
-conflicts. Hints only order existing edges. The ranking never authorizes metadata
-writes or calls a candidate search exhaustive. Matching is bounded to 256 files,
-128 releases and 16 recording suggestions per file. Provider decoding also
-supports larger legacy release lists; callers must cap matching candidates.
+## Matching
 
-The wrapper source is MIT; enabling fingerprinting includes LGPL-2.1-or-later
-chromaprint-next, so this package declares `MIT AND LGPL-2.1-or-later`. Retain the
-upstream license and comply with its distribution obligations in applications.
+`matching::compare` and `matching::rank` assign local tracks to release
+positions using recording evidence only: a maximum one-to-one assignment, with
+missing coverage, ambiguity and duration conflicts reported. Disc/position hints
+only order existing candidates. A tracklist is complete only when medium and
+track positions are contiguous; this is re-checked when an `AlbumMatch` is
+deserialized. Inputs are bounded by `MAX_TRACKS`, `MAX_RELEASES` and
+`MAX_RECORDINGS_PER_TRACK`.
 
-Run `cargo test -p junk-libs-music --all-features` and package Clippy with all
-features/targets. Real generated FLAC/MP3 fixtures exercise decoding, cancellation,
-truncation and inconsistent lengths. Provider and assignment tests are offline.
+## Dependencies
 
-## Review follow-up — 2026-10-30
+`chromaprint-next` is a git dependency pinned to a revision that correctly
+handles stereo frames split across feed calls (the published 0.1.0 does not).
 
-Completeness requires contiguous medium/track positions, and duplicate or zero
-medium positions fail closed. Tracks without a medium position cannot produce
-invented disc-zero mappings. Provider decoding rejects malformed track identities,
-positions and text, and successful AcoustID envelopes must include a results array.
-An explicitly empty track credit falls back to the recording credit. Searchability
-also requires a valid fingerprint envelope. Exhaustive independent enumeration of
-all 512 three-by-three recording graphs checks cardinality and ambiguity.
+## License
 
-Persisted review completeness is revalidated on deserialization. Historical
-responses remain readable with their track data intact; stale completeness flags
-are downgraded, and originally incomplete evidence is never upgraded. Existing
-accepted metadata is not rewritten.
+The crate source is MIT. Enabling `fingerprint` links LGPL-2.1-or-later
+chromaprint-next, so the package is declared `MIT AND LGPL-2.1-or-later`;
+applications must meet that license's distribution obligations.

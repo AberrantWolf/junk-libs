@@ -1,9 +1,8 @@
 //! Text-layer extraction for the hayro backend: a recording
 //! [`Device`] that ignores paint and captures `draw_glyph` calls as
-//! [`CharBox`]es (SPEC.md §4 / M1).
+//! [`CharBox`]es.
 //!
-//! hayro has no public text-extraction API yet (upstream #452/#1049), but it
-//! gives us the pieces: `draw_glyph` fires for every shown glyph — including
+//! hayro has no public text-extraction API, but it gives us the pieces: `draw_glyph` fires for every shown glyph — including
 //! invisible text, which is how OCR'd scans carry their text layer — with the
 //! page CTM and the glyph transform, and `Glyph::as_unicode()` resolves the
 //! character via ToUnicode/glyph-name/uniXXXX fallbacks.
@@ -13,8 +12,7 @@
 //! selection blocks. hayro doesn't expose font ascent/descent, so we use a
 //! nominal cell of −200..+800 in 1000-upem glyph space — a typical Latin
 //! ascent/descent split. Cell heights won't match pdfium's to the point, but
-//! they tile the same way, which is what selection needs. The A/B harness
-//! decides whether this is close enough (SPEC.md open question).
+//! they tile the same way, which is what selection needs.
 
 use hayro::hayro_interpret::font::Glyph;
 use hayro::hayro_interpret::hayro_cmap::BfString;

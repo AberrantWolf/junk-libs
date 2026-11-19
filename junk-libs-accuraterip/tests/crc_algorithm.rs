@@ -1,12 +1,10 @@
 //! Algorithmic tests for AccurateRip CRC v1 and v2.
 //!
-//! Pure-in-memory tests against hand-computed expected values so they run
-//! offline. The live ARver cross-check lives in `arver_live.rs` behind
-//! `#[ignore]`.
+//! In-memory tests against hand-computed expected values.
 
 use junk_libs_accuraterip::{
-    PcmSector, SAMPLES_PER_SECTOR, SKIP_SAMPLES, TrackCrc, TrackPosition, skip_bounds,
-    track_crc_samples, track_crc_streaming,
+    AccurateRipError, PcmSector, SAMPLES_PER_SECTOR, SKIP_SAMPLES, TrackCrc, TrackPosition,
+    skip_bounds, track_crc_samples, track_crc_streaming,
 };
 use junk_libs_core::AnalysisError;
 
@@ -219,7 +217,13 @@ fn mismatched_sample_count_errors() {
     // 5 sectors emitted but total claimed as 10.
     let sectors = zero_sectors(5);
     let err = track_crc_streaming(sectors, 10 * 588, TrackPosition::Middle).unwrap_err();
-    assert!(format!("{}", err).contains("iterator produced"));
+    assert!(matches!(
+        err,
+        AccurateRipError::SampleCount {
+            actual: 2940,
+            expected: 5880
+        }
+    ));
 }
 
 #[test]

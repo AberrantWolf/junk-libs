@@ -167,7 +167,6 @@ fn tagged(version: u8, mut body: Vec<u8>, unsync: bool) -> Vec<u8> {
 }
 #[test]
 fn id3_versions_unicode_unsynchronization_and_picture_variants() {
-    // Independently assembled ID3 bytes, with real independently encoded MPEG audio.
     let picture = b"\x89PNG\r\n\x1a\nfixture";
     for version in [2, 3, 4] {
         let title = if version == 4 {
@@ -399,8 +398,8 @@ fn suffix_metadata_read_is_bounded_and_cancellable_without_decoding_audio() {
         }
     }
     let mut bytes = fixture("mp3-44100-cbr.mp3");
-    // The later payload is intentionally invalid: metadata probing must not scan
-    // or decode it, and must not claim that the audio passed structural analysis.
+    // The appended payload is invalid audio: metadata probing must not scan or
+    // decode it, and reports no decoded frame count.
     bytes.extend(vec![0; 4 * 1024 * 1024]);
     bytes.extend(ape_tag(
         &[
@@ -467,8 +466,8 @@ fn ape_cover_mpeg_bytes_never_become_audio_or_distort_exact_seeks() {
     };
     let mut cover = b"front.png\0\x89PNG\r\n\x1a\n".to_vec();
     cover.extend(vec![0; 1000]);
-    // These real MPEG frames live inside an opaque binary tag, outside the
-    // validated audio range. No Xing duration is available to hide over-decoding.
+    // Real MPEG frames inside a binary tag must not be decoded as audio. The
+    // fixture has no Xing duration that would hide over-decoding.
     for _ in 0..3 {
         cover.extend(&original);
     }

@@ -160,8 +160,7 @@ impl Document {
         self.next_region_id = next_region_id;
     }
 
-    /// Crop the rendered bitmap to a region, for sending to a vision translator.
-    /// Maps the region's page-point rect to bitmap pixels via the page's render
+    /// Crop the rendered bitmap to a region. Maps the region's page-point rect to bitmap pixels via the page's render
     /// scale (`bitmap pixels / page points`).
     pub fn crop(&self, id: RegionId) -> Result<image::RgbaImage> {
         let region = self
@@ -213,8 +212,7 @@ impl PageModel for Document {
         self.pages.get(page).map(|p| &p.bitmap)
     }
     fn rerender_page(&mut self, page: usize, scale: f32) {
-        // Swallow errors as the interactive caller did (`let _ =`); a failed
-        // re-render just leaves the existing (lower-res) bitmap in place.
+        // A failed re-render leaves the existing (lower-res) bitmap in place.
         let _ = Document::rerender_page(self, page, scale);
     }
     fn regions_on(&self, page: usize) -> Vec<(RegionId, Rect)> {

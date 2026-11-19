@@ -1,31 +1,18 @@
 //! Engine-agnostic PDF render core: open a PDF, rasterize pages to RGBA, and
-//! extract the text layer as per-character boxes. The successor to
-//! `junk-libs-pdfium`, with the engine behind a feature flag:
+//! extract the text layer as per-character boxes. The engine is chosen by
+//! feature:
 //!
 //! - `backend-hayro` (default) — pure-Rust [hayro](https://github.com/LaurenzV/hayro).
-//!   Nothing to download, nothing to ship next to the executable, and no
-//!   process-global render lock: every call is self-contained, so pages render
-//!   in parallel from multiple threads.
-//! - `backend-pdfium` — delegates to `junk-libs-pdfium`. Kept for A/B render
-//!   comparison during the migration and as a dev-time test oracle; goes away
-//!   once the cutover sticks (see SPEC.md).
+//!   No global state; pages render in parallel from multiple threads.
+//! - `backend-pdfium` — delegates to `junk-libs-pdfium`.
 //!
-//! The top-level functions use the hayro engine when its feature is enabled,
-//! else pdfium. With both features on (the A/B configuration), each engine is
-//! also addressable directly via [`hayro_backend`] / [`pdfium_backend`].
+//! The top-level functions use hayro when its feature is enabled, else pdfium.
+//! With both enabled, each engine is addressable via [`hayro_backend`] /
+//! [`pdfium_backend`].
 //!
-//! API differences from `junk-libs-pdfium`: there is no `instance()` and no
-//! `&Pdfium` parameter — construction is plain and there is no global state.
-//! Errors are a typed [`Error`] instead of `anyhow`, so callers can
-//! distinguish "needs a password" from "broken file"; it converts into
-//! `anyhow::Error` with `?` like before.
-//!
-//! Text layer: both backends fill `char_boxes`. pdfium reports its own
-//! `loose_bounds`; the hayro backend records glyphs through a custom
-//! interpreter device (`hayro_text`), synthesizing the loose character cell
-//! from the advance width and a nominal ascent/descent. The A/B test suite
-//! (`tests/ab_backends.rs`, both features enabled) checks the two engines
-//! agree on strings, geometry, and pixels.
+//! Text layer: both backends fill `char_boxes`. pdfium reports its own loose
+//! bounds; the hayro backend synthesizes the character cell from the advance
+//! width and a nominal ascent/descent.
 
 #[cfg(not(any(feature = "backend-hayro", feature = "backend-pdfium")))]
 compile_error!(
@@ -50,7 +37,6 @@ use pdfium_backend as default_backend;
 use std::path::Path;
 
 /// Cap any single render dimension to avoid OOM at extreme zoom.
-/// (Same value `junk-libs-pdfium` used.)
 pub const MAX_RENDER_DIMENSION: u32 = 4096;
 
 /// Rendering and document errors, typed so a viewer can react sensibly —

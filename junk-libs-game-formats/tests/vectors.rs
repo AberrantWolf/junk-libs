@@ -70,7 +70,7 @@ fn nes2_exponent_multiplier_is_bytes_and_bad_lengths_fail_closed() {
 }
 
 #[test]
-fn trainer_misc_rom_trailing_and_truncated_ines_are_not_qualified() {
+fn trainer_misc_rom_and_truncated_ines_are_rejected() {
     let payload = formula(16 * 1024, 17, 3);
     let mut trainer = vec![0; 16];
     trainer[..4].copy_from_slice(b"NES\x1a");
@@ -126,19 +126,20 @@ fn all_n64_orders_normalize_across_hostile_chunk_boundaries() {
 }
 
 #[test]
-fn explicit_snes_and_pce_layouts_never_rewrite_the_master() {
+fn explicit_snes_and_pce_layouts_hash_only_the_payload() {
     let snes = formula(32 * 1024, 5, 11);
     let mut snes_headered = formula(512, 3, 9);
     snes_headered.extend_from_slice(&snes);
-    let original = snes_headered.clone();
-    let hashes =
-        hash_snes_payload(&mut Cursor::new(snes_headered), CopierHeader::Present512).unwrap();
+    let hashes = hash_snes_payload(
+        &mut Cursor::new(snes_headered.clone()),
+        CopierHeader::Present512,
+    )
+    .unwrap();
     assert_eq!(
         hashes.sha256,
         "f15a68d8106c43274943b31a148cd0f6a9cca229631d4374574786c1ec68e5cd"
     );
-    assert_eq!(original[..512], formula(512, 3, 9));
-    assert!(hash_snes_payload(&mut Cursor::new(original), CopierHeader::Absent).is_err());
+    assert!(hash_snes_payload(&mut Cursor::new(snes_headered), CopierHeader::Absent).is_err());
 
     let pce = formula(8 * 1024, 13, 7);
     let mut pce_headered = formula(512, 19, 2);

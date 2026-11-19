@@ -1,10 +1,6 @@
-//! A/B comparison between the hayro and pdfium backends — the migration gate
-//! from SPEC.md §5, in miniature. Runs only when both backend features are
-//! enabled: `cargo test -p junk-libs-platen --features backend-pdfium`.
-//!
-//! The corpus-scale version of this (imposition inputs, arXiv PDFs) runs as a
-//! dev-time xtask; these tests pin the *mechanics* — same text, compatible
-//! geometry, similar pixels — on the shared fixture.
+//! A/B comparison between the hayro and pdfium backends on the shared fixture:
+//! same text, compatible geometry, similar pixels. Runs only when both backend
+//! features are enabled. `examples/ab_compare.rs` is the corpus-scale version.
 
 #![cfg(all(feature = "backend-hayro", feature = "backend-pdfium"))]
 
@@ -48,7 +44,7 @@ fn text_layers_agree() {
     // Per-character geometry over real glyphs (synthetic whitespace boxes are
     // engine-specific): same left edge within a couple of points, and
     // overlapping vertical extent. Heights are allowed to differ — hayro uses
-    // a nominal ascent/descent cell (SPEC.md §4) — but each pair of boxes
+    // a nominal ascent/descent cell — but each pair of boxes
     // must cover the same place on the page.
     for (h, p) in hayro_pages[0]
         .char_boxes

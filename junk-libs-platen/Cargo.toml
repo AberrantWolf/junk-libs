@@ -6,10 +6,9 @@ license.workspace = true
 
 [features]
 default = ["backend-hayro"]
-# Pure-Rust engine (hayro). No binaries to download or ship.
+# Pure-Rust engine (hayro).
 backend-hayro = ["dep:hayro"]
-# Legacy engine, kept for A/B comparison during migration and as a dev-time
-# test oracle. Pulls in junk-libs-pdfium and its binary download machinery.
+# PDFium engine via junk-libs-pdfium, mainly for A/B comparison.
 backend-pdfium = ["dep:junk-libs-pdfium"]
 
 [[example]]
@@ -24,7 +23,5 @@ thiserror.workspace = true
 image = "0.25"
 log.workspace = true
 lopdf.workspace = true
-# Pinned exact: hayro is pre-1.0 and moving fast; bump deliberately, re-running
-# the A/B render comparison against the pdfium backend when you do.
-hayro = { version = "=0.7.1", optional = true, features = ["embed-fonts"] }
+hayro = { version = "0.7.1", optional = true, features = ["embed-fonts"] }
 junk-libs-pdfium = { workspace = true, optional = true }

@@ -1,8 +1,9 @@
 use std::cell::Cell;
 
 use junk_libs_accuraterip::{
-    BoundedDiscReader, DbarFile, DbarResponse, DiscPcmTrack, ExpectedChecksum, VerificationOptions,
-    VerificationStatus, verify_with_offset_reader,
+    ACCURATERIP_WORKING_BUFFER_BYTES, AccurateRipError, BoundedDiscReader, DbarFile, DbarResponse,
+    DiscPcmTrack, ExpectedChecksum, VerificationOptions, VerificationStatus,
+    verify_with_offset_reader,
 };
 use junk_libs_core::AnalysisError;
 use junk_libs_disc::CdPcmReader;
@@ -81,9 +82,7 @@ fn dbar(checksums: &[u32]) -> DbarFile {
 fn reader_path_preserves_i16_extremes_and_both_offset_signs_across_tracks() {
     assert_eq!(packed([i16::MIN, i16::MAX]), 0x7fff_8000);
     assert_eq!(packed([-1, 1]), 0x0001_ffff);
-    // Fixed independent vectors evaluated from the CUETools/ARver equations
-    // over GeneratedReader::frame_at, outside this implementation. Keeping
-    // v1 and v2 literal prevents the test oracle from sharing checksum code.
+    // Known-answer v1/v2 vectors for GeneratedReader::frame_at at each shift.
     let vectors = [
         (
             -6,
@@ -174,8 +173,12 @@ fn long_disc_uses_bounded_reads_and_observes_cancellation() {
     )
     .unwrap_err();
 
-    assert!(error.to_string().contains("cancelled"));
-    assert!(disc.reader().maximum_request.get() <= 16 * 1024);
+    assert!(matches!(
+        error,
+        AccurateRipError::Analysis(AnalysisError::Other(_))
+    ));
+    let max_request_bytes = disc.reader().maximum_request.get() * std::mem::size_of::<[i16; 2]>();
+    assert!(max_request_bytes <= ACCURATERIP_WORKING_BUFFER_BYTES);
 }
 
 #[test]
@@ -219,7 +222,7 @@ fn v2_only_catalog_without_anchor_does_not_claim_exhaustive_mismatch() {
         })
         .collect();
     let mut disc = BoundedDiscReader::new(GeneratedReader::new(27000), tracks).unwrap();
-    // Independent +6 vectors above, with no v1 or frame-450 anchor.
+    // The +6 v2 vectors above, with no v1 or frame-450 anchor.
     let result = verify_with_offset_reader(
         &dbar(&[0x29c8_5822, 0x191d_b58d, 0xe19e_cbf1]),
         &mut disc,

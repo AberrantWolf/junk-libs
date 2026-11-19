@@ -70,7 +70,6 @@ fn header_metadata_and_bom_are_content_detected() {
 #[test]
 fn unsupported_entries_and_oversized_tokens_do_not_vanish() {
     for xml in [
-        "<datafile><game name=\"No bytes\"/></datafile>",
         "<datafile><game name=\"Disk\"><disk name=\"chd\"/></game></datafile>",
         "<datafile><machine name=\"Machine\"/></datafile>",
         "<datafile><game name=\"Nested\"><game name=\"Other\"/></game></datafile>",
@@ -79,10 +78,10 @@ fn unsupported_entries_and_oversized_tokens_do_not_vanish() {
     }
     let xml = format!(
         "<datafile><header><name>{}</name></header></datafile>",
-        "x".repeat(65537)
+        "x".repeat(1 << 20)
     );
     assert!(parse_dat(xml.as_bytes()).is_err());
-    let clr = format!("clrmamepro (\nname \"{}\"\n)\n", "x".repeat(65537));
+    let clr = format!("clrmamepro (\nname \"{}\"\n)\n", "x".repeat(1 << 20));
     assert!(parse_dat(clr.as_bytes()).is_err());
 }
 
@@ -90,4 +89,17 @@ fn unsupported_entries_and_oversized_tokens_do_not_vanish() {
 fn clr_cannot_hide_unsupported_members_beside_valid_roms() {
     let clr=b"clrmamepro (\nname \"GB\"\nversion 1\n)\ngame (\nname \"Game\"\nrom ( name \"game.gb\" size 3 )\ndisk ( name \"hidden\" )\n)\n";
     assert!(parse_dat(clr.as_slice()).is_err());
+}
+
+#[test]
+fn games_without_roms_are_kept() {
+    for xml in [
+        "<datafile><game name=\"Empty\"/></datafile>",
+        "<datafile><game name=\"Empty\"></game></datafile>",
+    ] {
+        let dat = parse_dat(xml.as_bytes()).unwrap();
+        assert_eq!(dat.games.len(), 1, "{xml}");
+        assert_eq!(dat.games[0].name, "Empty");
+        assert!(dat.games[0].roms.is_empty());
+    }
 }

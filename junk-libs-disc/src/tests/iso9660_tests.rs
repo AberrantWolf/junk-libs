@@ -23,15 +23,7 @@ fn test_read_pvd_raw_bin() {
 }
 
 #[test]
-fn test_pvd_non_playstation() {
-    let data = make_iso("SOME_OTHER_SYS");
-    let mut cursor = Cursor::new(data);
-    let pvd = read_pvd(&mut cursor, DiscFormat::Iso2048).unwrap();
-    assert_eq!(pvd.system_identifier, "SOME_OTHER_SYS");
-}
-
-#[test]
-fn test_pvd_saturn_system_id() {
+fn test_pvd_does_not_require_a_specific_system_id() {
     let data = make_iso("SEGA SEGASATURN");
     let mut cursor = Cursor::new(data);
     let pvd = read_pvd(&mut cursor, DiscFormat::Iso2048).unwrap();

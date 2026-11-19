@@ -5,9 +5,7 @@
 //! a [`TrackCrc`]. Both variants are computed in a single pass to avoid
 //! per-sample divergence between v1 and v2 implementations.
 //!
-//! Algorithm reference: Phono Junk's source-cited
-//! `docs/knowledge/disc-formats/accuraterip.md`.
-//! Formulas cross-verified against [leo-bogert/accuraterip-checksum]
+//! Formulas follow [leo-bogert/accuraterip-checksum]
 //! (<https://github.com/leo-bogert/accuraterip-checksum>) and
 //! [arcctgx/ARver](https://github.com/arcctgx/ARver).
 //!
@@ -65,8 +63,7 @@ pub const SKIP_SAMPLES: u32 = 5 * 588;
 /// `total_samples` is the expected sample count of the track (typically
 /// `layout.length_sectors * 588`). Used to derive the last-track skip
 /// upper bound. If the iterator produces a different sample count the
-/// function returns [`AudioError::InvalidToc`] — AccurateRip verification
-/// is meaningless when sample-count assumptions break.
+/// function returns [`AccurateRipError::SampleCount`].
 pub fn track_crc_streaming<I>(
     samples: I,
     total_samples: u32,
@@ -128,7 +125,6 @@ fn accumulate(crc: &mut TrackCrc, position: u32, sample: u32) {
 
 /// Derive inclusive 1-indexed check bounds from the track's disc position.
 ///
-/// Exposed for tests and for the (future) offset-compensated variant.
 /// Returns `(check_start, check_end)`; positions outside that range
 /// contribute zero. The function never errors — if the track is shorter
 /// than the skip region the window simply becomes empty and the CRCs

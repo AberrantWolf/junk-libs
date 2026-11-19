@@ -63,9 +63,8 @@ impl Sidecars {
 
 /// Look for redumper sidecars matching a CUE's basename in its directory.
 ///
-/// Given `/path/to/foo.cue`, checks for `foo.log`, `foo.cdtext`, `foo.toc`,
-/// `foo.fulltoc`, `foo.subcode`, `foo.atip` in `/path/to/` and populates
-/// [`Sidecars`] with whichever exist.
+/// Given `/path/to/foo.cue`, checks `/path/to/` for `foo.<ext>` for every
+/// extension in [`Sidecars`] and populates whichever exist.
 ///
 /// No I/O happens on the sidecars themselves beyond `exists()` checks.
 /// Call [`parse_log`](super::parse_log) / [`parse_cdtext`](super::parse_cdtext)
@@ -120,17 +119,15 @@ pub struct CdRawStructure {
     pub subcode_frames: u64,
     /// Main-channel sample frames minus `subcode_frames * 588`.
     ///
-    /// This is intentionally signed. A Redumper package made with a drive
-    /// read offset of `+6`, for example, has a delta of `-6`: the corrected
-    /// main-channel timeline contains six fewer sample frames than the
-    /// sector-addressed subchannel timeline. It is alignment evidence for
-    /// later extraction code, not by itself a corruption indicator.
+    /// Signed: a package made with a drive read offset of `+6` has a delta of
+    /// `-6`, because the offset-corrected main-channel timeline is six frames
+    /// shorter than the sector-addressed subchannel timeline. A nonzero delta
+    /// is not by itself a corruption indicator.
     pub sample_frame_delta: i64,
 }
 
-/// Validate the byte-level invariants required by current redumper CD split.
-/// This is structural evidence only; it does not verify track boundaries or
-/// hashes and therefore cannot authorize deletion of the source package.
+/// Validate the byte-level invariants of a current redumper CD raw package.
+/// This is structural only; it does not verify track boundaries or hashes.
 pub fn validate_current_cd_raw(sidecars: &Sidecars) -> Result<CdRawStructure, AnalysisError> {
     if sidecars.legacy_scrap.is_some() {
         return Err(AnalysisError::unsupported(
@@ -164,9 +161,8 @@ pub fn validate_current_cd_raw(sidecars: &Sidecars) -> Result<CdRawStructure, An
     validate_current_cd_raw_parts(scram_len, state_len, subcode_len, &toc_bytes)
 }
 
-/// Validate current redumper CD sidecar lengths and the exact bounded TOC body
-/// without requiring filesystem paths. Package/archive adapters use this entry
-/// point after authorizing and opening their own opaque readers.
+/// Path-free form of [`validate_current_cd_raw`]: validates sidecar lengths
+/// and the `.toc` response bytes supplied by the caller.
 pub fn validate_current_cd_raw_parts(
     scram_len: u64,
     state_len: u64,
@@ -201,6 +197,8 @@ pub fn validate_current_cd_raw_parts(
     })
 }
 
+/// Validate a `.fulltoc` (READ TOC format 2) response. Anything other than a
+/// single-session disc is reported as unsupported.
 pub fn validate_full_toc_bytes(full: &[u8]) -> Result<(), AnalysisError> {
     validate_scsi_response_bytes(full, ".fulltoc")?;
     if full.len() < 4

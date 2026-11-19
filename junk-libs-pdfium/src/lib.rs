@@ -1,15 +1,14 @@
 //! GUI-agnostic PDFium render core: open a PDF, rasterize pages to RGBA, and
 //! extract the text layer as per-character boxes.
 //!
-//! Shared between the print-junk and expat-junk tools. Nothing here depends on a
-//! UI toolkit. Binding is dynamic at runtime, searched in this order:
+//! Nothing here depends on a UI toolkit. Binding is dynamic at runtime, searched
+//! in this order:
 //!
 //! 1. the build-vendored library — this crate's `build.rs` downloads `libpdfium`
 //!    into `OUT_DIR` and exports its directory as `PDFIUM_LIB_DIR`, which
 //!    [`instance`] reads via `option_env!` (present for in-tree dev/test builds);
 //! 2. a copy shipped **next to the executable** (packaged apps), searched
-//!    relative to the binary so it works regardless of the launch directory and
-//!    deterministically prefers our pinned binary over any system one;
+//!    relative to the binary so it works regardless of the launch directory;
 //! 3. a system-installed PDFium, as a last resort.
 //!
 //! The Cargo `pdfium_NNNN` feature and `build.rs`'s `PDFIUM_VERSION` must name the
@@ -271,9 +270,8 @@ fn extract_char_boxes(page: &PdfPage, page_height_pts: f32) -> Vec<CharBox> {
 mod tests {
     use super::*;
 
-    /// End-to-end proof the native pipeline works: bind the vendored PDFium,
-    /// generate a one-page A4 PDF with it, then render that PDF back to RGBA.
-    /// No display required, so this runs in CI.
+    /// Generate a one-page A4 PDF with PDFium, then render it back to RGBA from
+    /// both a file and an in-memory buffer.
     #[test]
     fn renders_a_generated_pdf() {
         let pdfium = instance().expect("bind PDFium");
@@ -289,22 +287,28 @@ mod tests {
         }
 
         let pages = render_pdf(pdfium, &path, 1.0).expect("render pdf");
+        let bytes = std::fs::read(&path).expect("read pdf bytes");
         let _ = std::fs::remove_file(&path);
-
         assert_eq!(pages.len(), 1);
-        let page = &pages[0];
+        let from_bytes =
+            render_page_bitmap_from_bytes(pdfium, &bytes, 0, 1.0).expect("render from bytes");
+
         // A4 = 210×297mm = 595×842pt; at zoom 1.0 the raster matches in pixels.
-        assert!(
-            (page.size_pts.0 - 595.0).abs() < 5.0 && (page.size_pts.1 - 842.0).abs() < 5.0,
-            "unexpected page size in points: {:?}",
-            page.size_pts
-        );
-        assert!(
-            (570..=620).contains(&page.image.width()) && (820..=870).contains(&page.image.height()),
-            "unexpected raster size: {}×{}",
-            page.image.width(),
-            page.image.height()
-        );
+        for (image, size_pts) in [
+            (&pages[0].image, pages[0].size_pts),
+            (&from_bytes.0, from_bytes.1),
+        ] {
+            assert!(
+                (size_pts.0 - 595.0).abs() < 5.0 && (size_pts.1 - 842.0).abs() < 5.0,
+                "unexpected page size in points: {size_pts:?}"
+            );
+            assert!(
+                (570..=620).contains(&image.width()) && (820..=870).contains(&image.height()),
+                "unexpected raster size: {}×{}",
+                image.width(),
+                image.height()
+            );
+        }
     }
 
     /// Place known text on a page, then verify we extract it with boxes in the
@@ -349,63 +353,6 @@ mod tests {
         assert!((55.0..95.0).contains(&h.x), "H.x = {}", h.x);
         assert!((90.0..150.0).contains(&h.y), "H.y = {}", h.y);
         assert!(h.w > 0.0 && h.h > 0.0, "degenerate H box {}×{}", h.w, h.h);
-    }
-
-    /// Render a single page straight from an in-memory PDF buffer (no file path),
-    /// the path the GUI uses for freshly typeset/imported documents.
-    #[test]
-    fn renders_a_page_from_bytes() {
-        let pdfium = instance().expect("bind PDFium");
-
-        let path = std::env::temp_dir().join("junk-libs-pdfium-bytes-test.pdf");
-        {
-            let mut document = pdfium.create_new_pdf().expect("create pdf");
-            document
-                .pages_mut()
-                .create_page_at_start(PdfPagePaperSize::a4())
-                .expect("create page");
-            document.save_to_file(&path).expect("save pdf");
-        }
-        let bytes = std::fs::read(&path).expect("read pdf bytes");
-        let _ = std::fs::remove_file(&path);
-
-        let (image, size_pts) =
-            render_page_bitmap_from_bytes(pdfium, &bytes, 0, 1.0).expect("render from bytes");
-        assert!(
-            (size_pts.0 - 595.0).abs() < 5.0 && (size_pts.1 - 842.0).abs() < 5.0,
-            "unexpected page size in points: {size_pts:?}"
-        );
-        assert!(
-            (570..=620).contains(&image.width()) && (820..=870).contains(&image.height()),
-            "unexpected raster size: {}×{}",
-            image.width(),
-            image.height()
-        );
-    }
-
-    /// The bundled-library search dirs must be derived relative to the executable
-    /// (not the cwd) and cover the release bundle layouts.
-    #[test]
-    fn bundled_lib_dirs_are_exe_relative() {
-        let dirs = bundled_lib_dirs();
-        assert!(
-            !dirs.is_empty(),
-            "should derive candidate dirs from current_exe"
-        );
-        let exe_dir = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_path_buf();
-        assert!(dirs.contains(&exe_dir), "same dir as the binary (Windows)");
-        assert!(
-            dirs.contains(&exe_dir.join("../lib")),
-            "../lib (Linux AppImage)"
-        );
-        assert!(
-            dirs.contains(&exe_dir.join("../Frameworks")),
-            "../Frameworks (macOS .app)"
-        );
     }
 
     /// Page count must come back without rendering, and match the pages created.

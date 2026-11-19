@@ -1,11 +1,12 @@
-//! Contiguous stereo playback conversion over lazy authorized byte sources.
+//! Contiguous stereo conversion of a run of sources to one output rate.
 use crate::{
     AudioDecodeError, AudioDecoder, ByteSource, FramePosition, PcmChunk, PcmFormat, SincResampler,
 };
 
 pub struct SequenceSource {
     pub bytes: ByteSource,
-    /// Recorded duration in its original PCM clock, independent of encoded rate.
+    /// Expected duration as `(frames, sample_rate)`; it may use a different
+    /// clock from the encoded file and is compared after rate conversion.
     pub expected_duration: Option<(u64, u32)>,
 }
 fn cancelled(check: &dyn Fn() -> bool) -> Result<(), AudioDecodeError> {
@@ -32,9 +33,10 @@ fn drain(
         emit(chunk)?;
     }
 }
-/// Decode on a worker. Compatible adjacent sources share a resampler and its
-/// fractional phase; a format change drains exactly before starting another.
-/// Sources and sinks remain caller-owned, bounded and cancellable adapters.
+/// Decode `sources` in order, emitting stereo PCM at `output_rate`. Compatible
+/// adjacent sources share a resampler and its fractional phase; a format
+/// change drains exactly before starting another. `check` returning `true`
+/// cancels.
 pub fn decode_sequence(
     sources: impl IntoIterator<Item = Result<SequenceSource, AudioDecodeError>>,
     output_rate: u32,

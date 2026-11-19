@@ -1,58 +1,34 @@
 # junk-libs
 
-Shared Rust libraries for [Junk Collector](https://github.com/AberrantWolf/junk-collector), [Retro Junk](https://github.com/AberrantWolf/retro-junk), [Phono Junk](https://github.com/AberrantWolf/phono-junk), [Trash Amp](https://github.com/AberrantWolf/trash-amp), and the document tools.
+Shared Rust libraries for [Junk Collector](https://github.com/AberrantWolf/junk-collector), [Retro Junk](https://github.com/AberrantWolf/retro-junk), [Phono Junk](https://github.com/AberrantWolf/phono-junk), [Trash Amp](https://github.com/AberrantWolf/trash-amp) and related tools.
 
-Use individual crates for reusable parsing, hashing, audio, rendering, and UI primitives. Collection policy, provider access, authorization, and application workflows stay in consumers.
+The crates provide parsing, hashing, audio, rendering and UI building blocks. Application policy — collections, providers, authorization, workflows — belongs in the consumers.
 
-## 📦 Crates
+## Crates
 
 | Crate | Purpose |
 |---|---|
-| `junk-libs-core` | Streaming CRC32/MD5/SHA-1 hashing, checksum types, reader traits, and filename grouping. |
-| `junk-libs-disc` | CUE, CHD, ISO 9660, and redumper parsing; CD sectors and integer PCM readers. |
-| `junk-libs-disc-id` | MusicBrainz, FreeDB/CDDB, and AccurateRip disc identifiers from validated TOCs. |
-| `junk-libs-accuraterip` | AccurateRip v1/v2 checksums, dBAR parsing, matching, and bounded sample-offset search. |
+| `junk-libs-core` | Streaming CRC32/MD5/SHA-1 hashing, checksum types, reader traits, filename grouping. |
+| `junk-libs-disc` | CUE, CHD, ISO 9660 and redumper parsing; CD sector and PCM readers. See [PLAYBACK.md](junk-libs-disc/PLAYBACK.md). |
+| `junk-libs-disc-id` | MusicBrainz, FreeDB/CDDB and AccurateRip disc IDs from a TOC. |
+| `junk-libs-accuraterip` | AccurateRip v1/v2 checksums, dBAR parsing, matching and sample-offset search. |
 | `junk-libs-dat` | Streaming Logiqx XML and ClrMamePro DAT parsing. |
-| `junk-libs-game-formats` | Reader-based game-dump inspection, normalization, and hashing. |
-| `junk-libs-music` | Cancellable FLAC/MP3 fingerprints, community MusicBrainz models, AcoustID response decoding and one-to-one album comparison. |
-| `junk-libs-audio` | Opaque byte sources, PCM frame coordinates, decoding, resampling, DSP, and derivative validation. |
-| `junk-libs-playback` | Consumer-owned queue keys, deterministic transitions, and generation-fenced seeking. |
-| `junk-libs-platen` | PDF rendering and text extraction; pure Rust by default, optional PDFium backend. |
-| `junk-libs-pdfium` | PDFium rendering and text extraction; downloads its matching native library at build time. |
+| `junk-libs-game-formats` | Game-dump inspection, normalization and hashing. |
+| `junk-libs-music` | FLAC/MP3 fingerprints, MusicBrainz models, AcoustID responses, album comparison. See [README](junk-libs-music/README.md). |
+| `junk-libs-audio` | Byte sources, PCM frame coordinates, decoding, resampling, DSP. See [README](junk-libs-audio/README.md). |
+| `junk-libs-playback` | Playback queue transitions and generation-fenced seeking. |
+| `junk-libs-platen` | PDF rendering and text extraction; pure Rust by default, optional PDFium backend. See [README](junk-libs-platen/README.md). |
+| `junk-libs-pdfium` | PDFium bindings; downloads the matching native library at build time. |
 | `junk-libs-raster` | GUI-independent raster helpers. |
-| `junk-libs-text` | Unicode shaping, bidi layout, explicit font fallback and rasterization. |
+| `junk-libs-text` | Unicode shaping, bidi layout, font fallback and rasterization. See [README](junk-libs-text/README.md). |
 | `junk-libs-egui-docview` | Zoomable, pageable egui canvas with editable rectangular regions. |
-| `junk-libs-egui-pdfdoc` | Eager and bounded lazy PDF/image models for the document viewer. |
+| `junk-libs-egui-pdfdoc` | Eager and lazy PDF/image models for the document viewer. See [README](junk-libs-egui-pdfdoc/README.md). |
 
-### Audio features
+Optional features are listed in each crate's `Cargo.toml` and README.
 
-`junk-libs-audio` has no default features. Enable only what your application needs:
+## Using the crates
 
-- `decode-wav`: PCM-WAV decoding and exact frame seeking.
-- `decode-compressed`: Symphonia codec support, including FLAC; exact seek and truncation checks have an independent FLAC test vector.
-- `decode-opus`: Ogg Opus (`.opus`, or Opus in `.ogg`) through bundled libopus via `symphonia-adapter-libopus` 0.2, which needs a C toolchain and CMake. RFC 7845 pre-skip, end trim, output gain and sample-exact seeking with 80 ms pre-roll are applied. Mono/stereo (channel mapping family 0) only; other families, and chained or multiplexed Ogg streams, are rejected with dedicated errors.
-- `disc-readers`: adapters for already-open CUE and redumper readers.
-- `resample`: bounded streaming sinc resampling. With `decode-compressed`, adds cancellable sequence conversion that retains resampler phase across compatible adjacent sources.
-- `derivative-validation`: FLAC integer-PCM comparison and Ogg Opus structure inspection.
-
-Gain and hard clipping are available without optional features. Codec availability does not imply every format is independently qualified; disc identifiers and integrity hashes are distinct from catalog verification.
-
-## 🔧 Build and check
-
-Use a current stable Rust toolchain with edition 2024 support.
-
-```sh
-cargo build --workspace --locked
-cargo test --workspace --all-features --locked
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo fmt --all -- --check
-```
-
-Some real-dump and external-tool tests are explicitly ignored unless their fixtures are provisioned.
-
-## Use in another workspace
-
-Depend on individual crates from Git; pin a `rev` or an existing `tag` for reproducible builds:
+Depend on individual crates from Git:
 
 ```toml
 [workspace.dependencies]
@@ -60,7 +36,7 @@ junk-libs-core = { git = "https://github.com/AberrantWolf/junk-libs" }
 junk-libs-audio = { git = "https://github.com/AberrantWolf/junk-libs", features = ["decode-compressed", "resample"] }
 ```
 
-For local development, override the Git dependencies with a sibling checkout:
+To develop against a local checkout, patch the Git source:
 
 ```toml
 [patch."https://github.com/AberrantWolf/junk-libs"]
@@ -68,31 +44,18 @@ junk-libs-core = { path = "../junk-libs/junk-libs-core" }
 junk-libs-audio = { path = "../junk-libs/junk-libs-audio" }
 ```
 
-Add overrides for other crates you edit. Active path overrides require that checkout to exist.
+## Building
+
+Requires stable Rust with edition 2024.
+
+```sh
+cargo test --workspace --all-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo fmt --all -- --check
+```
+
+Tests that need real dumps or external tools are `#[ignore]`d unless their fixtures are provided.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-### MP3 compatibility — 2026-11-01
-
-File inspection accepts checked APEv2 suffixes (optionally followed by ID3v1),
-including text tags and JPEG/PNG front covers. Tag sizes, counts, item boundaries,
-header/footer agreement and cancellation are checked before allocation or reads.
-Original encoded bytes are never rewritten. ID3 metadata keeps priority over APE
-text, and APE takes priority over the fallback ID3v1 footer.
-
-MP3 decoding uses the narrow [Symphonia 0.5.5 backport](vendor/symphonia-bundle-mp3/BACKPORT.md)
-of upstream PR #528. Empty channels at the bit-reservoir boundary decode normally;
-missing nonempty data still fails. This avoids silently skipping frames or treating
-decode errors as successful inspection. Other Symphonia APIs/codecs are unchanged.
-
-`inspect_file_audio_metadata` supplies the same bounded prefix/suffix tags and
-front cover without decoding/traversing the payload. It makes no structural
-validity claim and honors cancellation during metadata reads. Full analysis
-continues to use `inspect_file_audio`.
-
-MPEG decoders expose only the validated audio extent to demuxing and seeking;
-APEv2/ID3v1 suffix bytes cannot supply extra frames or inflate CBR byte estimates.
-Regression coverage includes a no-Xing source whose binary cover contains real
-MPEG frames, with and without an APE header, plus late exact seek/sample equality.

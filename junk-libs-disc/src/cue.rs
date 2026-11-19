@@ -49,7 +49,7 @@ impl CueIndex {
     /// Convert MSF (minutes:seconds:frames) to an absolute sector offset.
     /// CD audio uses 75 frames per second.
     pub fn to_sector_offset(&self) -> u64 {
-        ((self.minutes * 60 + self.seconds) as u64) * 75 + self.frames as u64
+        (u64::from(self.minutes) * 60 + u64::from(self.seconds)) * 75 + u64::from(self.frames)
     }
 }
 
@@ -150,8 +150,9 @@ pub fn parse_cue(content: &str) -> Result<CueSheet, AnalysisError> {
             }
         } else if matches!(keyword.as_str(), "PREGAP" | "POSTGAP") {
             let (minutes, seconds, frames) = parse_msf(rest)?;
-            let gap_frames = ((minutes * 60 + seconds) * 75)
-                .checked_add(frames)
+            let gap_frames = minutes
+                .checked_mul(60 * 75)
+                .and_then(|f| f.checked_add(seconds * 75 + frames))
                 .ok_or_else(|| AnalysisError::invalid_format("CUE gap length overflow"))?;
             let current = current_file
                 .as_mut()
@@ -619,7 +620,7 @@ pub fn convert_cue_to_standard(content: &str, _cue_dir: &Path) -> Result<String,
                 if need_file_line {
                     output_lines.push(format!("FILE \"{filename}\" BINARY"));
                 }
-                flush_pending_tracks_raw(&mut output_lines, &mut pending_tracks);
+                flush_pending_tracks(&mut output_lines, &mut pending_tracks);
             } else {
                 output_lines.push(format!("FILE \"{filename}\" BINARY"));
             }
@@ -753,22 +754,6 @@ fn extract_msf_from_remainder(remainder: &str) -> Option<String> {
 /// Flush pending tracks into output_lines, ensuring each track gets an INDEX 01
 /// if it doesn't already have one.
 fn flush_pending_tracks(
-    output_lines: &mut Vec<String>,
-    pending_tracks: &mut Vec<(u8, String, Vec<String>)>,
-) {
-    for (num, mode, indexes) in pending_tracks.drain(..) {
-        output_lines.push(format!("  TRACK {:02} {mode}", num));
-        if indexes.is_empty() {
-            output_lines.push("    INDEX 01 00:00:00".to_string());
-        } else {
-            output_lines.extend(indexes);
-        }
-    }
-}
-
-/// Flush pending tracks into output_lines without adding default INDEX entries.
-/// Used when the caller manages INDEX generation from byte offsets.
-fn flush_pending_tracks_raw(
     output_lines: &mut Vec<String>,
     pending_tracks: &mut Vec<(u8, String, Vec<String>)>,
 ) {

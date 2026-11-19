@@ -113,28 +113,10 @@ fn assert_three_track_shift(shift: i32) {
 }
 
 #[test]
-fn finds_negative_edge_shift_across_track_boundaries() {
-    assert_three_track_shift(-2939);
-}
-
-#[test]
-fn finds_small_negative_shift_across_track_boundaries() {
-    assert_three_track_shift(-6);
-}
-
-#[test]
-fn finds_zero_shift() {
-    assert_three_track_shift(0);
-}
-
-#[test]
-fn finds_small_positive_shift_across_track_boundaries() {
-    assert_three_track_shift(6);
-}
-
-#[test]
-fn finds_positive_edge_shift_across_track_boundaries() {
-    assert_three_track_shift(2939);
+fn finds_shifts_across_track_boundaries_up_to_the_search_edges() {
+    for shift in [-2939, -6, 0, 6, 2939] {
+        assert_three_track_shift(shift);
+    }
 }
 
 #[test]

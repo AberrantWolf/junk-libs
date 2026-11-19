@@ -6,9 +6,6 @@
 //! the channel words in this byte order, so decoding is a direct
 //! reinterpretation as 588 little-endian `u32` values.
 //!
-//! Consumers: phono-junk-accuraterip (CRC v1/v2), phono-junk-gui playback,
-//! the FLAC export pipeline, and any retro-junk CDDA consumer.
-//!
 //! Two source constructors mirror the two disc-image shapes this crate
 //! understands:
 //!
@@ -419,9 +416,7 @@ impl CdPcmReader for TrackPcmFrameReader {
 /// Reinterpret a 2352-byte raw CD audio sector as 588 stereo `u32` samples.
 ///
 /// Each sample packs `left | (right << 16)` where both channels are
-/// signed 16-bit PCM read as little-endian `u16`. This is the sole point
-/// in the codebase where byte-level audio layout is decoded; every other
-/// consumer (BIN, CHD, future MDS/MDF) flows through here.
+/// signed 16-bit PCM read as little-endian `u16`.
 pub fn sector_to_samples(raw: &[u8; RAW_SECTOR_SIZE as usize]) -> PcmSector {
     let mut out = [0u32; PCM_SAMPLES_PER_SECTOR];
     for (i, out_sample) in out.iter_mut().enumerate() {

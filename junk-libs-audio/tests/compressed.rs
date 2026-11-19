@@ -10,7 +10,7 @@ fn open(bytes: Vec<u8>) -> AudioDecoder {
     .unwrap()
 }
 #[test]
-fn independent_flac_vector_preserves_samples_count_and_exact_seek() {
+fn flac_vector_preserves_samples_count_and_exact_seek() {
     let mut decoder = open(include_bytes!("fixtures/ramp-1001.flac").to_vec());
     assert_eq!(decoder.total_frames(), Some(1001));
     let mut frames = 0;

@@ -3,10 +3,9 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use crate::layout::{LEAD_IN_FRAMES, TrackKind};
-use crate::pcm::{
-    CdPcmReader, PCM_SAMPLES_PER_SECTOR, TrackPcmFrameReader, TrackPcmReader, sector_to_samples,
-};
+use crate::pcm::{CdPcmReader, TrackPcmFrameReader, TrackPcmReader, sector_to_samples};
 use crate::sector::RAW_SECTOR_SIZE;
+use junk_libs_core::AnalysisError;
 
 // ---------------------------------------------------------------------------
 // sector_to_samples unit tests
@@ -32,14 +31,6 @@ fn sector_to_samples_packs_little_endian_u16_pairs() {
     for s in &samples[2..] {
         assert_eq!(*s, 0);
     }
-}
-
-#[test]
-fn sector_to_samples_emits_exactly_588_samples() {
-    let raw = [0u8; RAW_SECTOR_SIZE as usize];
-    let samples = sector_to_samples(&raw);
-    assert_eq!(samples.len(), PCM_SAMPLES_PER_SECTOR);
-    assert_eq!(samples.len(), 588);
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +192,7 @@ fn from_cue_multi_bin_reads_each_files_contents() {
 // from_cue: multi-BIN with INDEX 00 pregap on later track
 // ---------------------------------------------------------------------------
 
-/// Our production bug case: track 3 has INDEX 00 00:00:00 + INDEX 01 00:01:33
+/// Track 3 has INDEX 00 00:00:00 + INDEX 01 00:01:33
 /// (108-frame pregap at the start of track 3's BIN; CUE MSF frames are
 /// 1/75s, so 1 second + 33 frames = 75 + 33 = 108). Expected behaviour:
 ///   - Track 3 starts at BIN 3 sector 108 (skips the pregap, plays music).
@@ -269,9 +260,10 @@ fn from_cue_rejects_missing_track_number() {
         "FILE \"disc.bin\" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n",
     )
     .unwrap();
-    let err = TrackPcmReader::from_cue(&cue_path, 99).expect_err("missing track must error");
-    let msg = format!("{err}");
-    assert!(msg.contains("no track 99"), "got: {msg}");
+    assert!(matches!(
+        TrackPcmReader::from_cue(&cue_path, 99),
+        Err(AnalysisError::InvalidFormat(_))
+    ));
 }
 
 #[test]
@@ -284,8 +276,10 @@ fn from_cue_rejects_data_track() {
         "FILE \"disc.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n",
     )
     .unwrap();
-    let err = TrackPcmReader::from_cue(&cue_path, 1).expect_err("data track must error");
-    assert!(format!("{err}").contains("rejects non-audio"));
+    assert!(matches!(
+        TrackPcmReader::from_cue(&cue_path, 1),
+        Err(AnalysisError::InvalidFormat(_))
+    ));
 }
 
 #[test]
@@ -297,12 +291,10 @@ fn from_cue_rejects_missing_bin_file() {
         "FILE \"ghost.bin\" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n",
     )
     .unwrap();
-    let err = TrackPcmReader::from_cue(&cue_path, 1).expect_err("missing BIN must error");
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("ghost.bin"),
-        "error should name the missing file: {msg}"
-    );
+    assert!(matches!(
+        TrackPcmReader::from_cue(&cue_path, 1),
+        Err(AnalysisError::Io(_))
+    ));
 }
 
 #[test]
@@ -324,8 +316,10 @@ fn from_cue_rejects_misaligned_bin_size() {
         "FILE \"odd.bin\" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n",
     )
     .unwrap();
-    let err = TrackPcmReader::from_cue(&cue_path, 1).expect_err("misaligned BIN must error");
-    assert!(format!("{err}").contains("not a multiple of"));
+    assert!(matches!(
+        TrackPcmReader::from_cue(&cue_path, 1),
+        Err(AnalysisError::InvalidFormat(_))
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -400,8 +394,7 @@ fn seek_past_end_errors() {
     // sectors). seek(11) overshoots → error.
     r.seek_to_sector(10).unwrap();
     assert!(r.next().is_none());
-    let err = r.seek_to_sector(11).expect_err("overshoot must error");
-    assert!(format!("{err}").contains("exceeds track length"));
+    assert!(r.seek_to_sector(11).is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -423,7 +416,7 @@ fn total_samples_matches_length_sectors_times_588() {
 }
 
 // ---------------------------------------------------------------------------
-// from_chd: real-fixture integration (opt-in, unchanged)
+// from_chd: real-fixture integration (opt-in)
 // ---------------------------------------------------------------------------
 
 /// Full-track PCM iteration via [`TrackPcmReader::from_chd`] must yield
@@ -438,21 +431,16 @@ fn total_samples_matches_length_sectors_times_588() {
 ///     cargo test -p junk-libs-disc -- --ignored chd_pcm_iterator
 /// ```
 #[test]
-#[ignore]
+#[ignore = "set JUNK_LIBS_CHD_FIXTURE to a CHD with an audio track"]
 fn chd_pcm_iterator_matches_read_chd_raw_sector() {
     use std::fs::File;
     use std::io::BufReader;
 
     use crate::chd::{read_chd_layout, read_chd_raw_sector};
 
-    let path = match std::env::var("JUNK_LIBS_CHD_FIXTURE") {
-        Ok(p) => p.into(),
-        Err(_) => {
-            eprintln!("JUNK_LIBS_CHD_FIXTURE not set; skipping");
-            return;
-        }
-    };
-    let path: std::path::PathBuf = path;
+    let path: std::path::PathBuf = std::env::var_os("JUNK_LIBS_CHD_FIXTURE")
+        .expect("JUNK_LIBS_CHD_FIXTURE")
+        .into();
 
     let layouts = read_chd_layout(&path).expect("layout");
     let audio = layouts

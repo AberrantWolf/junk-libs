@@ -2,9 +2,7 @@
 //!
 //! `TrackLayout` is the canonical "disc layout" shape: one entry per track,
 //! with its absolute sector position on the disc (lead-in already applied)
-//! and its length. Callers that care about audio-CD identification
-//! (phono-junk) or game-disc extraction (retro-junk) both consume this
-//! shape, so the MSF/sector arithmetic lives here exactly once.
+//! and its length.
 
 /// CD lead-in length in frames (sectors).
 ///
@@ -16,10 +14,8 @@ pub const LEAD_IN_FRAMES: u32 = 150;
 
 /// Kind of track, classified from the source's mode/type string.
 ///
-/// `Unknown` is a hedge for mode strings we don't explicitly recognise.
-/// Downstream code is expected to treat `Unknown` conservatively (e.g.
-/// phono-junk's CD-Extra detection treats `Unknown` as audio rather than
-/// silently discarding the track).
+/// `Unknown` covers mode strings that are not explicitly recognised;
+/// callers should treat it conservatively.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackKind {
     Audio,

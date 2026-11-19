@@ -13,7 +13,7 @@ serde.workspace = true
 thiserror.workspace = true
 junk-libs-audio = { workspace = true, features = ["decode-compressed"], optional = true }
 chromaprint-next = { git = "https://github.com/attilagyorffy/chromaprint-next", rev = "7a384eee09caf17b4f6241f481dd784c2e937d9a", optional = true }
-musicbrainz_rs = { version = "=0.14.0", default-features = false, optional = true }
+musicbrainz_rs = { version = "0.14", default-features = false, optional = true }
 serde_json = { version = "1", optional = true }
 url = { version = "2", optional = true }
 [dev-dependencies]

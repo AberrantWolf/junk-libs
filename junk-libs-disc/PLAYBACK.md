@@ -1,32 +1,95 @@
 # Disc playback APIs
 
-`cue_audio::CueAudioDisc` builds a playback timeline for standard BINARY CUE sheets. `track_reader(number)` returns signed 16-bit stereo frames with exact frame seeks. Its layout preserves INDEX positions and PRE/DCP flags, distinguishes synthetic PREGAP/POSTGAP lengths from stored gaps, and exposes a separate hidden first-track range. Normal tracks run INDEX 01 to the next audio INDEX 01; an audio track before a data track stops before that data track's stored or synthetic pregap. No data extents can be opened through `range_reader`.
+## Reader contract
 
-The older `cue`, `layout`, and `pcm::TrackPcmReader` APIs retain their existing layout/hash semantics. Consumers doing playback should use the new API. Nonstandard CDRWin playback is rejected rather than converting away flags or placement directives. The old compatibility and hash APIs remain available.
+`cue_audio::CueAudioReader`, `redumper::pcm::RawAudioReader` and
+`pcm::TrackPcmFrameReader` all implement `pcm::CdPcmReader`.
 
-`redumper::pcm::read_audio_layout` and `RawAudioReader::open` support current `.scram/.state/.subcode/.toc` packages for single-session, two-channel, all-audio discs. They do not need a CUE sheet or split BIN files. A present `.fulltoc` is checked for a single session. Legacy `.scrap`, mixed-mode raw images, multichannel and multisession images are rejected. The format-0 TOC gives INDEX 01 boundaries and the lead-out; raw INDEX 00/subchannel reconstruction remains follow-up work. `.subcode` is structurally validated, not treated as decoded Q metadata.
+- Positions and lengths are **stereo sample frames**, not bytes, sectors or
+  channel samples. One CD sector holds 588 frames; each frame is four
+  little-endian bytes, left `i16` then right `i16`.
+- `read_frames` may return fewer frames than requested; a short nonzero read is
+  not end of stream. Zero frames (for a nonempty buffer) means end of range.
+- `seek_frame` to exactly `total_frames()` is legal; beyond it is an error.
+- Truncated sources and out-of-range seeks return errors; missing samples are
+  never padded. A failed `CueAudioReader` or `RawAudioReader` read leaves the
+  cursor and the caller's buffer unchanged.
+- Readers never apply de-emphasis, resampling or normalization. `PRE` is
+  reported as metadata only.
 
-`RawAudioReader::from_sources` accepts caller-provided `Read + Seek + Send` streams for an explicitly validated audio range. `from_signed_sources` additionally supports negative disc positions for a caller-validated HTOA/pregap range. This lets a future range-backed network source supply bytes without adding transport dependencies to the reader. Neither low-level constructor determines whether its range contains audio: use the validated package constructor when that evidence is not already available.
+## CUE playback: `cue_audio::CueAudioDisc`
 
-All new reader positions and lengths use **stereo sample frames**, not bytes, sectors, or individual channel samples. One CD sector contains 588 stereo frames; each frame is four little-endian bytes, left i16 followed by right i16. Each read returns at most 588 frames; a short nonzero read is not EOF. Readers retain bounded buffers, and sequential reads retain buffering instead of seeking for every sector. Seeking to the exact end is legal. Out-of-range seeks, truncated sources, and unknown state values return errors. Read errors leave the logical cursor and caller's output unchanged.
+`CueAudioDisc::open` builds a playback timeline for standard `BINARY` CUE
+sheets. CDRWin-style sheets and unknown `FLAGS` (for example `4CH`) are
+rejected rather than converted, because they can change audio placement.
 
-## Redumper format evidence
+- Each track records its INDEX positions, `PRE`/`DCP` flags, and synthetic
+  `PREGAP`/`POSTGAP` lengths. Synthetic gaps play as silence; stored INDEX 00
+  gaps play from the file.
+- `track_reader(n)` spans INDEX 01 to the next audio track's INDEX 01, so it
+  includes its own postgap and the following track's pregap. An audio track
+  followed by a data track stops before that data track's pregap.
+- `hidden_audio` is the first-track audio before INDEX 01 (hidden track one
+  audio). It is not part of track 1; read it with `range_reader`.
+- `range_reader` rejects any range that touches a data track.
 
-Behavior was checked against upstream redumper commit `f01a78657c7aa73ae0c82adfee98944445c1b2e1`, using the source as a format reference; no upstream implementation was copied.
+## Sector and hash APIs: `cue`, `layout`, `pcm::TrackPcmReader`
 
-- [cd_common.ixx](https://github.com/superg/redumper/blob/f01a78657c7aa73ae0c82adfee98944445c1b2e1/cd/cd_common.ixx): raw origin LBA -45150; `.toc` uses MMC format 0 with LBA addresses, `.fulltoc` uses format 2.
-- [cd_dump.ixx](https://github.com/superg/redumper/blob/f01a78657c7aa73ae0c82adfee98944445c1b2e1/cd/cd_dump.ixx): LBA 0 is byte offset `0x6545fa0` in `.scram`; drive read offset is applied while writing the raw timeline.
-- [common.ixx](https://github.com/superg/redumper/blob/f01a78657c7aa73ae0c82adfee98944445c1b2e1/common.ixx): `.state` is one byte per stereo frame: 0 skipped, 1 C2 error, 2 successful with C2 disabled, 3 successful with SCSI checking disabled, 4 successful.
-- [cd_split.ixx](https://github.com/superg/redumper/blob/f01a78657c7aa73ae0c82adfee98944445c1b2e1/cd/cd_split.ixx): splitting may apply a separate disc-write offset. The raw reader deliberately retains the recording timeline, does not infer offset from file lengths, and never reapplies the drive read offset. Audio is not descrambled.
+These describe tracks in absolute sectors (lead-in of 150 applied) with
+INDEX 01-to-next-INDEX 01 lengths, the convention used for DiscID and
+AccurateRip. Synthetic gaps are not included. CDRWin sheets are converted
+automatically. `TrackPcmFrameReader` gives exact frame seeking over a
+`TrackPcmReader`. Use `cue_audio` for playback.
 
-For a disc-relative stereo frame `f`, the raw byte offset is `(45150 * 588 + f) * 4`. The corresponding state byte offset is `45150 * 588 + f`. A six-frame-short file tail from a +6 drive read offset does not change this origin.
+## Redumper raw packages: `redumper::pcm`
 
-The caller explicitly selects Reject, Silence, or Preserve for states 0/1. States 2/3 remain separately reported; they are not relabeled as fully checked samples. Unknown states always fail. PRE is metadata: these readers do not apply de-emphasis, resampling, normalization, or other effects.
+`read_audio_layout` and `RawAudioReader::open` read current redumper
+`.scram`/`.state`/`.subcode`/`.toc` packages without a CUE or split BIN files.
+Supported: single-session discs where every track is two-channel audio. A
+`.fulltoc`, when present, must describe a single session. Legacy `.scrap`
+packages, data tracks, four-channel audio and multisession discs are rejected.
 
-## Validation and remaining work
+Track boundaries come from the format-0 TOC (INDEX 01 positions and lead-out);
+INDEX 00 is not reconstructed from subchannel. `.subcode` is only checked for
+length.
 
-Synthetic tests cover sparse raw sources, independent channel/sample patterns, raw-versus-BIN playback, cross-track boundaries, non-sector seeks, EOF, repeated seeking, quality-policy behavior, truncated input, malformed TOCs, CUE stored/synthetic gaps, first-track hidden audio, and audio-to-data boundaries. No copyrighted payloads are checked in.
+`RawAudioReader::from_sources` takes caller-supplied `Read + Seek + Send`
+streams for a range the caller has already established is audio.
+`from_signed_sources` also accepts negative disc frames, for a validated
+hidden-track/pregap range before LBA 0.
 
-The ignored `real_audio_raw_matches_split_bin_on_the_recording_timeline` test uses the existing Octopath b736 fixture described in `tests/fixtures/redumper/README.md`. It requires `JUNK_LIBS_REDUMPER_AUDIO_PREFIX` and verifies every sample of all 18 tracks. That fixture's known disc-write offset is zero; a nonzero offset must never be hidden by an automatically adjusted oracle. This new full comparison has not yet been run because the fixture path has not been supplied.
+### Sample quality
 
-Remaining raw work: CRC-validated Q/index reconstruction, raw HTOA range discovery, and safe mixed-mode/multisession layout support (including disc-write/variable-offset boundaries). Those cases fail explicitly or require a caller-validated low-level range; they are not advertised as supported automatic playback. Real-dump and captured-device gaplessness validation remain necessary before release.
+Each read returns a `SampleQuality` with per-state counts. For states 0
+(skipped) and 1 (C2 error) the caller picks an `InvalidSamplePolicy`:
+`Reject` fails the read, `Silence` outputs zeros, `Preserve` outputs the stored
+samples. States 2 (C2 disabled) and 3 (SCSI checks disabled) are delivered but
+counted separately from 4 (fully verified). Any other state value is an error.
+
+### Format notes
+
+Format reference: the [redumper source](https://github.com/superg/redumper).
+No upstream code is copied.
+
+- The raw timeline starts at LBA -45150. For disc frame `f`, the `.scram` byte
+  offset is `(45150 * 588 + f) * 4` and the `.state` byte offset is
+  `45150 * 588 + f`.
+- `.state` holds one byte per stereo frame: 0 skipped, 1 C2 error, 2 read with
+  C2 disabled, 3 read with SCSI checks disabled, 4 verified.
+- `.toc` is an MMC READ TOC format 0 response with LBA addresses; `.fulltoc`
+  is format 2.
+- The drive read offset is already applied in `.scram`. A disc write offset
+  (which redumper's split may apply) is **not** applied: the reader keeps the
+  recording timeline and never infers an offset from file lengths. Audio is
+  not descrambled. A `+6` read offset leaves the files six frames short of
+  `.subcode` sectors × 588; the origin is unchanged.
+
+## Tests
+
+Synthetic tests cover the contracts above; no copyrighted payloads are checked
+in. The ignored test
+`real_audio_raw_matches_split_bin_on_the_recording_timeline` compares every
+sample of every track against redumper's split BINs. Set
+`JUNK_LIBS_REDUMPER_AUDIO_PREFIX` as described in
+`tests/fixtures/redumper/README.md`. The comparison is only valid for a
+package with a zero disc write offset, which the test asserts.

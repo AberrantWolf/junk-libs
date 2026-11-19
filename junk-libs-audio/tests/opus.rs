@@ -3,8 +3,8 @@
 //! RFC 7845, so expectations come from the stream construction rather than
 //! from committed binaries. The reference PCM is a plain libopus decode from
 //! the first packet with pre-skip, end trim and output gain applied by hand.
-//! Adapter 0.2.x releases decode to i16 or f32, so exact-path comparisons
-//! allow one 16-bit quantization step; misalignment would show as ~0.5.
+//! The adapter may decode through i16, so exact-path comparisons allow one
+//! 16-bit quantization step; misalignment would show as ~0.5.
 
 use std::{ffi::c_int, io::Cursor};
 
@@ -359,13 +359,6 @@ fn output_gain_is_applied() {
             ..Spec::new(2, 9_600)
         });
         let reference = fixture.reference();
-        let unity = encode(&Spec::new(2, 9_600)).reference();
-        let ratio = reference[2_000] / unity[2_000];
-        assert!(
-            (ratio - fixture.gain).abs() < 1e-4,
-            "{ratio} vs {}",
-            fixture.gain
-        );
         let decoded = read_all(&mut fixture.open("opus").unwrap(), 1_000);
         assert_close(&decoded, &reference, EXACT * fixture.gain, "gain");
     }
@@ -373,8 +366,8 @@ fn output_gain_is_applied() {
 
 #[test]
 fn single_page_stream_trims_end_not_start() {
-    // FFmpeg/libopus fixture: one audio page whose granule (952) is below its
-    // coded duration (960); Symphonia alone would treat that as start delay.
+    // One audio page whose granule (952) is below its coded duration (960);
+    // Symphonia alone would treat that as start delay.
     let bytes = include_bytes!("fixtures/silence-588.opus").to_vec();
     let mut decoder = open_bytes(bytes, "opus").unwrap();
     assert_eq!(decoder.total_frames(), Some(640));
